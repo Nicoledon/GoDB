@@ -170,11 +170,8 @@ func FindAllocatedDeletedView(hp HeapPage) (allocatedView Bitmap, deletedview Bi
 	return allocatedView, deletedview
 }
 func (hp HeapPage) FindFreeSlot() int {
-	allocatedView, deletedView := FindAllocatedDeletedView(hp)
+	allocatedView, _ := FindAllocatedDeletedView(hp)
 	find := allocatedView.FindFirstZero(0)
-	if find == -1 {
-		return deletedView.FindFirstOne(0)
-	}
 	return find
 }
 
@@ -190,8 +187,12 @@ func (hp HeapPage) IsAllocated(rid common.RecordID) bool {
 func (hp HeapPage) MarkAllocated(rid common.RecordID, allocated bool) {
 	allocatedView, deletedView := FindAllocatedDeletedView(hp)
 	allocatedView.SetBit(int(rid.Slot), allocated)
-	deletedView.SetBit(int(rid.Slot), !allocated)
-	hp.setNumUsed(hp.NumUsed() + 1)
+	if allocated {
+		hp.setNumUsed(hp.NumUsed() + 1)
+	} else {
+		deletedView.SetBit(int(rid.Slot), allocated)
+		hp.setNumUsed(hp.NumUsed() - 1)
+	}
 }
 
 func (hp HeapPage) IsDeleted(rid common.RecordID) bool {
