@@ -180,8 +180,8 @@ func (hp HeapPage) FindFreeSlot() int {
 
 // IsAllocated checks the allocation bitmap to see if a slot is valid.
 func (hp HeapPage) IsAllocated(rid common.RecordID) bool {
-	allocatedView, deletedView := FindAllocatedDeletedView(hp)
-	if allocatedView.LoadBit(int(rid.Slot)) && !deletedView.LoadBit(int(rid.Slot)) {
+	allocatedView, _ := FindAllocatedDeletedView(hp)
+	if allocatedView.LoadBit(int(rid.Slot)) {
 		return true
 	}
 	return false
@@ -200,14 +200,12 @@ func (hp HeapPage) IsDeleted(rid common.RecordID) bool {
 }
 
 func (hp HeapPage) MarkDeleted(rid common.RecordID, deleted bool) {
-	allocatedView, deletedView := FindAllocatedDeletedView(hp)
-	allocatedView.SetBit(int(rid.Slot), !deleted)
+	_, deletedView := FindAllocatedDeletedView(hp)
 	deletedView.SetBit(int(rid.Slot), deleted)
 }
 
 func (hp HeapPage) AccessTuple(rid common.RecordID) RawTuple {
 	AccessStart := hp.DeletedBitmapStart + hp.DeletedBitmapLen + hp.RowLens*int(rid.Slot)
-	data := make([]byte, hp.RowLens)
-	copy(data, hp.Bytes[AccessStart:AccessStart+hp.RowLens])
+	data := hp.Bytes[AccessStart : AccessStart+hp.RowLens]
 	return RawTuple(data)
 }
