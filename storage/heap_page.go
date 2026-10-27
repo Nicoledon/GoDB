@@ -147,10 +147,10 @@ func (frame *PageFrame) AsHeapPage() HeapPage {
 	}
 }
 func FindAllocatedDeletedView(hp HeapPage) (allocatedView Bitmap, deletedview Bitmap) {
-	allocatedBytes := make([]byte, hp.AllocatedBitmapLen-4)
-	deletedBytes := make([]byte, hp.PageFrame.DeletedBitmapLen-4)
-	copy(allocatedBytes, hp.Bytes[hp.PageFrame.AllocatedBitmapStart:hp.PageFrame.AllocatedBitmapStart+hp.AllocatedBitmapLen-4])
-	copy(deletedBytes, hp.Bytes[hp.PageFrame.DeletedBitmapStart:hp.PageFrame.DeletedBitmapStart+hp.DeletedBitmapLen-4])
+	//allocatedBytes := make([]byte, hp.AllocatedBitmapLen-4)
+	//deletedBytes := make([]byte, hp.PageFrame.DeletedBitmapLen-4)
+	allocatedBytes := hp.Bytes[hp.PageFrame.AllocatedBitmapStart : hp.PageFrame.AllocatedBitmapStart+hp.AllocatedBitmapLen-4]
+	deletedBytes := hp.Bytes[hp.PageFrame.DeletedBitmapStart : hp.PageFrame.DeletedBitmapStart+hp.DeletedBitmapLen-4]
 	var allcatedNum uint32 = 0
 	var deletedNum uint32 = 0
 	var isBigEndian = func() bool {
