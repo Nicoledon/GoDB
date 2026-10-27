@@ -25,6 +25,7 @@ type PageFrame struct {
 	DeletedBitmapStart   int
 	DeletedBitmapLen     int
 	RowLens              int
+	success              bool
 }
 
 // Detect system endianness -- compiler should statically replace this with a constant

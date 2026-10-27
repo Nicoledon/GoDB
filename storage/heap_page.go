@@ -112,6 +112,11 @@ func CalculateMaxTuples(RowSize int) int {
 func InitializeHeapPage(desc *RawTupleDesc, frame *PageFrame) {
 	setRowSlots(uint16(desc.bytesPerRow), frame)
 	RowSize := CalculateMaxTuples(desc.bytesPerRow)
+	if RowSize > 0 {
+		frame.success = true
+	} else {
+		frame.success = false
+	}
 	var entry int = (RowSize + 63) / 64
 	setNumSlots(uint16(RowSize), frame)
 	zeros := make([]byte, entry*8)
@@ -170,6 +175,9 @@ func FindAllocatedDeletedView(hp HeapPage) (allocatedView Bitmap, deletedview Bi
 	return allocatedView, deletedview
 }
 func (hp HeapPage) FindFreeSlot() int {
+	if !hp.success {
+		return -1
+	}
 	allocatedView, _ := FindAllocatedDeletedView(hp)
 	find := allocatedView.FindFirstZero(0)
 	return find
