@@ -5,6 +5,7 @@ type Node struct {
 	evictable bool
 	pins      pinCount
 	frame     *PageFrame
+	dirty     bool
 }
 type Lru_k_replacer struct {
 	// add more fields here...
