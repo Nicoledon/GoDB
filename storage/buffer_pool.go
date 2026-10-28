@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"math"
+
 	"mit.edu/dsg/godb/common"
 )
 
@@ -11,8 +13,15 @@ import (
 // must be thread-safe, as multiple threads will request the same or different pages concurrently.
 // To get full credit, you likely need to do better than coarse-grained latching (i.e., a global latch for the entire
 // BufferPool instance).
+var CurrentTime uint64 = 0
+
+type pinCount int
 type BufferPool struct {
 	// add more fields here...
+	numPages    int
+	fileManager DBFileManager
+	logManager  LogManager
+	pageMap     *Lru_k_replacer
 }
 
 // NewBufferPool creates a new BufferPool with a fixed capacity defined by numPages. It requires a
@@ -20,12 +29,52 @@ type BufferPool struct {
 //
 // Hint: You will need to worry about logManager until Lab 3
 func NewBufferPool(numPages int, storageManager DBFileManager, logManager LogManager) *BufferPool {
-	panic("unimplemented")
+	return &BufferPool{
+		numPages:    numPages,
+		fileManager: storageManager,
+		logManager:  logManager,
+		pageMap:     NewLRUKreplacer(numPages),
+	}
 }
 
 // StorageManager returns the underlying disk manager.
 func (bp *BufferPool) StorageManager() DBFileManager {
-	panic("unimplemented")
+	return bp.fileManager
+}
+
+//	func (bp *BufferPool) GetPageWhenPageIsNotFull(pageID common.PageID) (*PageFrame, error) {
+//		_, ok := bp.pageMap.pageManager[int(pageID.PageNum)]
+//		if !ok && len(map) < bp.numPages{
+//			file , _ := bp.fileManager.GetDBFile(pageID.Oid)
+//			page := PageFrame{}
+//			err := file.ReadPage(int(pageID.PageNum), page.Bytes[:])
+//			if err != nil {
+//				return nil, err
+//			}
+//		}else if ok {
+//
+//		}
+//	}
+func UpdateTime(node *Node) {
+	node.timestamp[1] = node.timestamp[0]
+	node.timestamp[0] = CurrentTime
+}
+func InitNode(node *Node, frame *PageFrame) {
+	node.timestamp[0] = math.MaxUint64
+	node.timestamp[1] = math.MaxUint64
+	node.evictable = true
+	node.pins = 0
+	node.frame = frame
+}
+func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
+	file, err := bp.fileManager.GetDBFile(pageID.Oid)
+	if err != nil {
+		panic("readpageIN panic")
+	}
+	err = file.ReadPage(int(pageID.PageNum), frame.Bytes[:])
+	if err != nil {
+		panic("readpageIN panic")
+	}
 }
 
 // GetPage retrieves a page from the buffer pool, ensuring it is pinned (i.e. prevented from eviction until
@@ -33,7 +82,20 @@ func (bp *BufferPool) StorageManager() DBFileManager {
 // present, the method must first make space by selecting a victim frame to evict
 // (potentially writing it to disk if dirty), and then read the requested page from disk into that frame.
 func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
-	panic("unimplemented")
+	page, ok := bp.pageMap.pageManager[int(pageID.PageNum)]
+	// case 1 当成功找到了这个PAGE 之后
+	if ok {
+		UpdateTime(page)
+		return page.frame, nil
+	} else if len(bp.pageMap.pageManager) < bp.numPages {
+		// case 2 当pageMap 没有满的时候 ，并且没找到在这个pageMap 里面
+		frame := PageFrame{}
+		node := Node{}
+		ReadPageIN(bp, pageID, &frame)
+		InitNode(&node, &frame)
+		bp.pageMap.pageManager[int(pageID.PageNum)] = &node
+	}
+	CurrentTime += 1
 }
 
 // UnpinPage indicates that the caller is done using a page. It unpins the page, making the page potentially evictable
