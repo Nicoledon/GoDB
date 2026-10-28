@@ -2,6 +2,7 @@ package storage
 
 import (
 	"math"
+	"sync"
 
 	"mit.edu/dsg/godb/common"
 )
@@ -22,6 +23,7 @@ type BufferPool struct {
 	fileManager DBFileManager
 	logManager  LogManager
 	pageMap     *Lru_k_replacer
+	mu          sync.Mutex
 }
 
 // NewBufferPool creates a new BufferPool with a fixed capacity defined by numPages. It requires a
@@ -95,6 +97,7 @@ func DeleteEvictablePage(bp *BufferPool, pageID common.PageID) int {
 // present, the method must first make space by selecting a victim frame to evict
 // (potentially writing it to disk if dirty), and then read the requested page from disk into that frame.
 func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
+	bp.mu.Lock()
 	page, ok := bp.pageMap.pageManager[int(pageID.PageNum)]
 	// case 1 当成功找到了这个PAGE 之后
 	if ok {
@@ -103,6 +106,7 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		page.pins += 1
 		page.evictable = false
 		page.frame.pageID = int(pageID.PageNum)
+		bp.mu.Unlock()
 		return page.frame, nil
 	} else if len(bp.pageMap.pageManager) < bp.numPages {
 		// case 2 当pageMap 没有满的时候 ，并且没找到在这个pageMap 里面
@@ -115,6 +119,7 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		bp.pageMap.pageManager[int(pageID.PageNum)] = &node
 		CurrentTime += 1
 		frame.pageID = int(pageID.PageNum)
+		bp.mu.Unlock()
 		return &frame, nil
 	}
 	index := DeleteEvictablePage(bp, pageID)
@@ -128,6 +133,7 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 	bp.pageMap.pageManager[int(pageID.PageNum)] = node
 	delete(bp.pageMap.pageManager, index)
 	CurrentTime += 1
+	bp.mu.Unlock()
 	return frame, nil
 }
 
@@ -135,16 +141,19 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 // if no other thread is accessing it. If the setDirty flag is true, the page is marked as modified, ensuring
 // it will be written back to disk before eviction.
 func (bp *BufferPool) UnpinPage(frame *PageFrame, setDirty bool) {
+	bp.mu.Lock()
 	bp.pageMap.pageManager[frame.pageID].pins -= 1
 	bp.pageMap.pageManager[frame.pageID].dirty = setDirty
 	if bp.pageMap.pageManager[frame.pageID].pins == 0 {
 		bp.pageMap.pageManager[frame.pageID].evictable = true
 	}
+	bp.mu.Unlock()
 }
 
 // FlushAllPages flushes all dirty pages to disk that have an LSN less than `flushedUntil`, regardless of pins.
 // This is typically called during a checkpoint or Shutdown to ensure durability, but also useful for tests
 func (bp *BufferPool) FlushAllPages() error {
+	bp.mu.Lock()
 	for _, v := range bp.pageMap.pageManager {
 		if v.dirty {
 			file, _ := bp.fileManager.GetDBFile(v.recordID.Oid)
@@ -154,6 +163,7 @@ func (bp *BufferPool) FlushAllPages() error {
 			}
 		}
 	}
+	bp.mu.Unlock()
 	return nil
 }
 
