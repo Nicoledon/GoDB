@@ -46,13 +46,13 @@ func UpdateTime(node *Node) {
 	node.timestamp[1] = node.timestamp[0]
 	node.timestamp[0] = CurrentTime
 }
-func InitNode(node *Node, frame *PageFrame) {
+func InitNode(node *Node, frame *PageFrame, recordID common.PageID) {
 	node.timestamp[0] = math.MaxUint64
 	node.timestamp[1] = math.MaxUint64
-	node.evictable = true
 	node.pins = 0
 	node.frame = frame
 	node.dirty = false
+	node.recordID = recordID
 }
 func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 	file, err := bp.fileManager.GetDBFile(pageID.Oid)
@@ -64,7 +64,7 @@ func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 		panic("readpageIN panic")
 	}
 }
-func DeleteEvictablePage(bp *BufferPool, pageID common.PageID) {
+func DeleteEvictablePage(bp *BufferPool, pageID common.PageID) int {
 	var min uint64 = math.MaxUint64
 	var index int = -1
 	for k, v := range bp.pageMap.pageManager {
@@ -80,13 +80,14 @@ func DeleteEvictablePage(bp *BufferPool, pageID common.PageID) {
 		panic("error happend in find evictable page")
 	}
 	if bp.pageMap.pageManager[index].dirty {
-		file, _ := bp.fileManager.GetDBFile(pageID.Oid)
-		err := file.WritePage(int(pageID.PageNum), bp.pageMap.pageManager[index].frame.Bytes[:])
+		IDS := bp.pageMap.pageManager[index].recordID
+		file, _ := bp.fileManager.GetDBFile(IDS.Oid)
+		err := file.WritePage(int(IDS.PageNum), bp.pageMap.pageManager[index].frame.Bytes[:])
 		if err != nil {
 			panic("error occur")
 		}
 	}
-	delete(bp.pageMap.pageManager, index)
+	return index
 }
 
 // GetPage retrieves a page from the buffer pool, ensuring it is pinned (i.e. prevented from eviction until
@@ -108,7 +109,7 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		frame := PageFrame{}
 		node := Node{}
 		ReadPageIN(bp, pageID, &frame)
-		InitNode(&node, &frame)
+		InitNode(&node, &frame, pageID)
 		node.pins += 1
 		node.evictable = false
 		bp.pageMap.pageManager[int(pageID.PageNum)] = &node
@@ -116,17 +117,18 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		frame.pageID = int(pageID.PageNum)
 		return &frame, nil
 	}
-	DeleteEvictablePage(bp, pageID)
-	frame := PageFrame{}
-	node := Node{}
-	ReadPageIN(bp, pageID, &frame)
-	InitNode(&node, &frame)
+	index := DeleteEvictablePage(bp, pageID)
+	frame := bp.pageMap.pageManager[index].frame
+	frame.pageID = int(pageID.PageNum)
+	node := bp.pageMap.pageManager[index]
+	ReadPageIN(bp, pageID, frame)
+	InitNode(node, frame, pageID)
 	node.pins += 1
 	node.evictable = false
-	bp.pageMap.pageManager[int(pageID.PageNum)] = &node
+	bp.pageMap.pageManager[int(pageID.PageNum)] = node
+	delete(bp.pageMap.pageManager, index)
 	CurrentTime += 1
-	frame.pageID = int(pageID.PageNum)
-	return &frame, nil
+	return frame, nil
 }
 
 // UnpinPage indicates that the caller is done using a page. It unpins the page, making the page potentially evictable
@@ -143,7 +145,16 @@ func (bp *BufferPool) UnpinPage(frame *PageFrame, setDirty bool) {
 // FlushAllPages flushes all dirty pages to disk that have an LSN less than `flushedUntil`, regardless of pins.
 // This is typically called during a checkpoint or Shutdown to ensure durability, but also useful for tests
 func (bp *BufferPool) FlushAllPages() error {
-	panic("unimplemented")
+	for _, v := range bp.pageMap.pageManager {
+		if v.dirty {
+			file, _ := bp.fileManager.GetDBFile(v.recordID.Oid)
+			err := file.WritePage(int(v.recordID.PageNum), v.frame.Bytes[:])
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // GetDirtyPageTableSnapshot returns a map of all currently dirty pages and their RecoveryLSN.
