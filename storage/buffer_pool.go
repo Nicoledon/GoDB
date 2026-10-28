@@ -68,11 +68,14 @@ func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 }
 func DeleteEvictablePage(bp *BufferPool, pageID common.PageID) int {
 	var min uint64 = math.MaxUint64
+	var subMin uint64 = math.MaxUint64
 	var index int = -1
+	var subIndex int = -1
 	for k, v := range bp.pageMap.pageManager {
-		if v.evictable && v.timestamp[1] == math.MaxUint64 {
-			index = k
-			break
+		if v.evictable && v.timestamp[1] == math.MaxUint64 && v.timestamp[0] < subMin {
+			subMin = v.timestamp[0]
+			subIndex = k
+			index = 0
 		} else if v.evictable && v.timestamp[1] < min {
 			min = v.timestamp[1]
 			index = k
@@ -80,6 +83,9 @@ func DeleteEvictablePage(bp *BufferPool, pageID common.PageID) int {
 	}
 	if index == -1 {
 		panic("error happend in find evictable page")
+	}
+	if subIndex != -1 {
+		index = subIndex
 	}
 	if bp.pageMap.pageManager[index].dirty {
 		IDS := bp.pageMap.pageManager[index].recordID
@@ -117,6 +123,7 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		node.pins += 1
 		node.evictable = false
 		bp.pageMap.pageManager[int(pageID.PageNum)] = &node
+		UpdateTime(&node)
 		CurrentTime += 1
 		frame.pageID = int(pageID.PageNum)
 		bp.mu.Unlock()
@@ -132,6 +139,7 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 	node.evictable = false
 	bp.pageMap.pageManager[int(pageID.PageNum)] = node
 	delete(bp.pageMap.pageManager, index)
+	UpdateTime(node)
 	CurrentTime += 1
 	bp.mu.Unlock()
 	return frame, nil

@@ -9,19 +9,16 @@ type Node struct {
 	frame     *PageFrame
 	dirty     bool
 	recordID  common.PageID
-	ref       int
 }
 type Lru_k_replacer struct {
 	// add more fields here...
-	numPage       int
-	pageManager   map[int]*Node
-	history_queue []int
+	numPage     int
+	pageManager map[int]*Node
 }
 
 func NewLRUKreplacer(numPages int) *Lru_k_replacer {
 	return &Lru_k_replacer{
-		numPage:       numPages,
-		pageManager:   make(map[int]*Node),
-		history_queue: make([]int, 0),
+		numPage:     numPages,
+		pageManager: make(map[int]*Node),
 	}
 }
