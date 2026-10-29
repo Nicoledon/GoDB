@@ -28,6 +28,7 @@ type PageFrame struct {
 	success              bool
 	pageID               int
 	PageLock             sync.Mutex
+	Loading              bool
 }
 
 // Detect system endianness -- compiler should statically replace this with a constant
