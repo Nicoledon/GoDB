@@ -17,6 +17,7 @@ import (
 var CurrentTime uint64 = 0
 
 type pinCount int
+
 type BufferPool struct {
 	// add more fields here...
 	numPages    int
@@ -48,6 +49,7 @@ func UpdateTime(node *Node) {
 	node.timestamp[1] = node.timestamp[0]
 	node.timestamp[0] = CurrentTime
 }
+
 func InitNode(node *Node, frame *PageFrame, recordID common.PageID) {
 	node.timestamp[0] = math.MaxUint64
 	node.timestamp[1] = math.MaxUint64
@@ -56,7 +58,9 @@ func InitNode(node *Node, frame *PageFrame, recordID common.PageID) {
 	node.dirty = false
 	node.recordID = recordID
 }
+
 func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
+	frame.PageLock.Lock()
 	file, err := bp.fileManager.GetDBFile(pageID.Oid)
 	if err != nil {
 		panic("readpageIN panic")
@@ -65,37 +69,44 @@ func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 	if err != nil {
 		panic("readpageIN panic")
 	}
+	frame.PageLock.Unlock()
 }
-func DeleteEvictablePage(bp *BufferPool, pageID common.PageID) int {
-	var min uint64 = math.MaxUint64
-	var subMin uint64 = math.MaxUint64
+
+func DeleteEvictablePage(bp *BufferPool) int {
+	//var Min uint64 = math.MaxUint64
 	var index int = -1
-	var subIndex int = -1
-	for k, v := range bp.pageMap.pageManager {
-		if v.evictable && v.timestamp[1] == math.MaxUint64 && v.timestamp[0] < subMin {
-			subMin = v.timestamp[0]
-			subIndex = k
-			index = 0
-		} else if v.evictable && v.timestamp[1] < min {
-			min = v.timestamp[1]
-			index = k
+
+	//for k, v := range bp.pageMap.pageManager {
+	//	if v.evictable && v.timestamp[1] == math.MaxUint64 && v.timestamp[0] < Min {
+	//		Min = v.timestamp[0]
+	//		index = k
+	//	}
+	//}
+	for len(bp.pageMap.underKqueue) > 0 { // 等价于 len(q) != 0
+		node := bp.pageMap.underKqueue[0]
+		bp.pageMap.underKqueue = bp.pageMap.underKqueue[1:] // 头部 pop，O(1)
+		if node.timestamp[1] == math.MaxUint64 {
+			return int(node.recordID.PageNum)
 		}
+		// 处理 v
 	}
-	if index == -1 {
-		panic("error happend in find evictable page")
-	}
-	if subIndex != -1 {
-		index = subIndex
-	}
-	if bp.pageMap.pageManager[index].dirty {
-		IDS := bp.pageMap.pageManager[index].recordID
-		file, _ := bp.fileManager.GetDBFile(IDS.Oid)
-		err := file.WritePage(int(IDS.PageNum), bp.pageMap.pageManager[index].frame.Bytes[:])
-		if err != nil {
-			panic("error occur")
-		}
+	if len(bp.pageMap.aboveKqueue) == 0 {
+		panic("error occur in delete page")
+	} else if len(bp.pageMap.aboveKqueue) != 0 {
+		index = int(bp.pageMap.aboveKqueue[0].recordID.PageNum)
+		bp.pageMap.aboveKqueue = bp.pageMap.aboveKqueue[1:]
+		return index
 	}
 	return index
+}
+
+func WritePageOutAndReadPageIn(bp *BufferPool, NewPageID common.PageID, OldPageID common.PageID, frame *PageFrame) {
+	NewFile, _ := bp.fileManager.GetDBFile(NewPageID.Oid)
+	frame.PageLock.Lock()
+	OldFile, _ := bp.fileManager.GetDBFile(OldPageID.Oid)
+	OldFile.WritePage(int(OldPageID.PageNum), frame.Bytes[:])
+	NewFile.ReadPage(int(NewPageID.PageNum), frame.Bytes[:])
+	frame.PageLock.Unlock()
 }
 
 // GetPage retrieves a page from the buffer pool, ensuring it is pinned (i.e. prevented from eviction until
@@ -112,13 +123,13 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		page.pins += 1
 		page.evictable = false
 		page.frame.pageID = int(pageID.PageNum)
+		bp.pageMap.aboveKqueue = append(bp.pageMap.aboveKqueue, page)
 		bp.mu.Unlock()
 		return page.frame, nil
 	} else if len(bp.pageMap.pageManager) < bp.numPages {
 		// case 2 当pageMap 没有满的时候 ，并且没找到在这个pageMap 里面
 		frame := PageFrame{}
 		node := Node{}
-		ReadPageIN(bp, pageID, &frame)
 		InitNode(&node, &frame, pageID)
 		node.pins += 1
 		node.evictable = false
@@ -126,14 +137,17 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		UpdateTime(&node)
 		CurrentTime += 1
 		frame.pageID = int(pageID.PageNum)
+		bp.pageMap.underKqueue = append(bp.pageMap.underKqueue, &node)
 		bp.mu.Unlock()
+		ReadPageIN(bp, pageID, &frame)
 		return &frame, nil
 	}
-	index := DeleteEvictablePage(bp, pageID)
+	index := DeleteEvictablePage(bp)
+	dirty := bp.pageMap.pageManager[index].dirty
+	OldPage := bp.pageMap.pageManager[index].recordID
 	frame := bp.pageMap.pageManager[index].frame
 	frame.pageID = int(pageID.PageNum)
 	node := bp.pageMap.pageManager[index]
-	ReadPageIN(bp, pageID, frame)
 	InitNode(node, frame, pageID)
 	node.pins += 1
 	node.evictable = false
@@ -141,7 +155,13 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 	delete(bp.pageMap.pageManager, index)
 	UpdateTime(node)
 	CurrentTime += 1
+	bp.pageMap.underKqueue = append(bp.pageMap.underKqueue, node)
 	bp.mu.Unlock()
+	if dirty {
+		WritePageOutAndReadPageIn(bp, pageID, OldPage, frame)
+	} else {
+		ReadPageIN(bp, pageID, frame)
+	}
 	return frame, nil
 }
 
@@ -151,7 +171,9 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 func (bp *BufferPool) UnpinPage(frame *PageFrame, setDirty bool) {
 	bp.mu.Lock()
 	bp.pageMap.pageManager[frame.pageID].pins -= 1
-	bp.pageMap.pageManager[frame.pageID].dirty = setDirty
+	if !bp.pageMap.pageManager[frame.pageID].dirty {
+		bp.pageMap.pageManager[frame.pageID].dirty = setDirty
+	}
 	if bp.pageMap.pageManager[frame.pageID].pins == 0 {
 		bp.pageMap.pageManager[frame.pageID].evictable = true
 	}
@@ -165,10 +187,13 @@ func (bp *BufferPool) FlushAllPages() error {
 	for _, v := range bp.pageMap.pageManager {
 		if v.dirty {
 			file, _ := bp.fileManager.GetDBFile(v.recordID.Oid)
+			v.frame.PageLock.Lock()
 			err := file.WritePage(int(v.recordID.PageNum), v.frame.Bytes[:])
 			if err != nil {
 				return err
 			}
+			v.dirty = false
+			v.frame.PageLock.Unlock()
 		}
 	}
 	bp.mu.Unlock()
