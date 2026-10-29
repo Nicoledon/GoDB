@@ -26,6 +26,7 @@ type BufferPool struct {
 	pageMap     *Lru_k_replacer
 	mu          sync.Mutex
 	cond        *sync.Cond
+	cond_page   *sync.Cond
 }
 
 // NewBufferPool creates a new BufferPool with a fixed capacity defined by numPages. It requires a
@@ -41,6 +42,7 @@ func NewBufferPool(numPages int, storageManager DBFileManager, logManager LogMan
 		pageMap:     NewLRUKreplacer(numPages),
 	}
 	pool.cond = sync.NewCond(&pool.mu)
+	pool.cond_page = sync.NewCond(&pool.mu)
 	return &pool
 }
 
@@ -80,27 +82,30 @@ func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 
 func DeleteEvictablePage(bp *BufferPool) int {
 	//var Min uint64 = math.MaxUint64
-	var index int = -1
-
-	for len(bp.pageMap.underKqueue) > 0 { // 等价于 len(q) != 0
-		node := bp.pageMap.underKqueue[0]
-		bp.pageMap.underKqueue = bp.pageMap.underKqueue[1:] // 头部 pop，O(1)
-		if node.timestamp[1] == math.MaxUint64 && node.evictable {
-			return int(node.recordID.PageNum)
-		}
-		// 处理 v
-	}
-	if len(bp.pageMap.aboveKqueue) == 0 {
-		panic("error occur in delete page")
-	} else if len(bp.pageMap.aboveKqueue) != 0 {
+	for {
 		for len(bp.pageMap.underKqueue) > 0 { // 等价于 len(q) != 0
 			node := bp.pageMap.underKqueue[0]
 			bp.pageMap.underKqueue = bp.pageMap.underKqueue[1:] // 头部 pop，O(1)
-			 if  node.evictable {
+			_, ok := bp.pageMap.pageManager[int(node.recordID.PageNum)]
+			if ok && node.timestamp[1] == math.MaxUint64 && node.evictable {
 				return int(node.recordID.PageNum)
 			}
+			// 处理 v
+		}
+		for len(bp.pageMap.aboveKqueue) > 0 {
+			for len(bp.pageMap.aboveKqueue) > 0 { // 等价于 len(q) != 0
+				node := bp.pageMap.aboveKqueue[0]
+				bp.pageMap.aboveKqueue = bp.pageMap.aboveKqueue[1:] // 头部 pop，O(1)
+				_, ok := bp.pageMap.pageManager[int(node.recordID.PageNum)]
+				if ok && node.evictable {
+					return int(node.recordID.PageNum)
+				}
+			}
+		}
+		bp.cond_page.Wait()
+
 	}
-	return index
+	panic("we fucked")
 }
 
 func WritePageOutAndReadPageIn(bp *BufferPool, NewPageID common.PageID, OldPageID common.PageID, frame *PageFrame) {
@@ -188,6 +193,7 @@ func (bp *BufferPool) UnpinPage(frame *PageFrame, setDirty bool) {
 		bp.pageMap.pageManager[frame.pageID].evictable = true
 	}
 	bp.mu.Unlock()
+	bp.cond_page.Signal()
 }
 
 // FlushAllPages flushes all dirty pages to disk that have an LSN less than `flushedUntil`, regardless of pins.
