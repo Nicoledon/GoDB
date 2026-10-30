@@ -26,9 +26,8 @@ type PageFrame struct {
 	DeletedBitmapLen     int
 	RowLens              int
 	success              bool
-	pageID               int
+	pageID               common.PageID
 	PageLock             sync.Mutex
-	Loading              bool
 }
 
 // Detect system endianness -- compiler should statically replace this with a constant
