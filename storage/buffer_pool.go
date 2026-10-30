@@ -23,7 +23,7 @@ type BufferPool struct {
 	pageMap     *clock_replacer
 	mu          sync.Mutex
 	cond        *sync.Cond
-	//cond_page   *sync.Cond
+	cond_page   *sync.Cond
 }
 
 // NewBufferPool creates a new BufferPool with a fixed capacity defined by numPages. It requires a
@@ -38,6 +38,7 @@ func NewBufferPool(numPages int, storageManager DBFileManager, logManager LogMan
 		pageMap:     NewClockreplacer(numPages),
 	}
 	pool.cond = sync.NewCond(&pool.mu)
+	pool.cond_page = sync.NewCond(&pool.mu)
 	return &pool
 }
 
@@ -72,6 +73,7 @@ func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 		panic("readpageIN panic")
 	}
 }
+
 func WritePageOut(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 	file, err := bp.fileManager.GetDBFile(pageID.Oid)
 	if err != nil {
@@ -82,9 +84,14 @@ func WritePageOut(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 		panic("readpageIN panic")
 	}
 }
+
 func DeleteEvictablePage(bp *BufferPool) (common.PageID, *PageFrame, bool) {
+	maxtime := 2000
+	if maxtime < bp.numPages*2 {
+		maxtime = bp.numPages * 2
+	}
 	for {
-		for i := 0; i < bp.numPages*2; i++ {
+		for i := 0; i < maxtime; i++ {
 			hand := bp.pageMap.clock_hand
 			if !bp.pageMap.clock_page[hand].valid {
 				bp.pageMap.clock_hand = (hand + 1) % bp.numPages
@@ -94,6 +101,10 @@ func DeleteEvictablePage(bp *BufferPool) (common.PageID, *PageFrame, bool) {
 				return bp.pageMap.clock_page[hand].pageID, bp.pageMap.clock_page[hand], true
 			} else if bp.pageMap.clock_page[hand].evictable && bp.pageMap.clock_page[hand].ref {
 				bp.pageMap.clock_page[hand].ref = false
+			}
+			if bp.pageMap.clock_page[hand].evictable && i > 500 {
+				bp.pageMap.clock_hand = (hand + 1) % bp.numPages
+				return bp.pageMap.clock_page[hand].pageID, bp.pageMap.clock_page[hand], true
 			}
 			hand = (hand + 1) % bp.numPages
 			bp.pageMap.clock_hand = hand
@@ -114,10 +125,16 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		// case 1 当成功找到了这个PAGE 之后
 		if ok {
 			//page.DataLatch.Lock()
+			if page.pageID != pageID {
+				bp.cond_page.Wait()
+				continue
+			}
+			if page.pins == 0 {
+				page.ref = true
+			}
 			page.pins += 1
 			page.evictable = false
 			page.pageID = pageID
-			page.ref = true
 			//page.DataLatch.Unlock()
 			bp.mu.Unlock()
 			page.PageLatch.Lock()
@@ -143,15 +160,20 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		dirty := bp.pageMap.pageManager[index].dirty
 		InitNode(frame, pageID)
 		bp.pageMap.pageManager[pageID] = frame
-		delete(bp.pageMap.pageManager, index)
+		frame.PageLatch.Lock()
+		if !dirty {
+			delete(bp.pageMap.pageManager, index)
+		}
+		bp.mu.Unlock()
 		if dirty {
 			WritePageOut(bp, index, frame)
 			frame.dirty = false
+			bp.mu.Lock()
+			delete(bp.pageMap.pageManager, index)
+			bp.mu.Unlock()
+			bp.cond_page.Broadcast()
 		}
-		frame.PageLatch.Lock()
-		bp.mu.Unlock()
 		ReadPageIN(bp, pageID, frame)
-
 		frame.PageLatch.Unlock()
 		return frame, nil
 	}
@@ -169,7 +191,7 @@ func (bp *BufferPool) UnpinPage(frame *PageFrame, setDirty bool) {
 	}
 	if frame.pins == 0 {
 		frame.evictable = true
-		frame.ref = false
+		//frame.ref = false
 		bp.cond.Signal()
 	}
 	//frame.DataLatch.Unlock()
@@ -181,15 +203,13 @@ func (bp *BufferPool) UnpinPage(frame *PageFrame, setDirty bool) {
 func (bp *BufferPool) FlushAllPages() error {
 	cache := make([]*PageFrame, 0)
 	bp.mu.Lock()
-	for _, v := range bp.pageMap.pageManager {
+	for k, v := range bp.pageMap.pageManager {
 		//v.DataLatch.Lock()
-		cache = append(cache, v)
-		v.pins += 1
-		v.evictable = false
-		//v.DataLatch.Unlock()
-	}
-	bp.mu.Unlock()
-	for _, v := range cache {
+		if k == v.pageID {
+			cache = append(cache, v)
+			v.pins += 1
+			v.evictable = false
+		}
 		v.PageLatch.Lock()
 		file, _ := bp.fileManager.GetDBFile(v.pageID.Oid)
 		err := file.WritePage(int(v.pageID.PageNum), v.Bytes[:])
@@ -205,6 +225,25 @@ func (bp *BufferPool) FlushAllPages() error {
 		}
 		//v.DataLatch.Unlock()
 	}
+	bp.mu.Unlock()
+	//bp.mu.Lock()
+	//for _, v := range cache {
+	//	v.PageLatch.Lock()
+	//	file, _ := bp.fileManager.GetDBFile(v.pageID.Oid)
+	//	err := file.WritePage(int(v.pageID.PageNum), v.Bytes[:])
+	//	v.PageLatch.Unlock()
+	//	//v.DataLatch.Lock()
+	//	v.pins -= 1
+	//	v.dirty = false
+	//	if v.pins == 0 {
+	//		v.evictable = true
+	//	}
+	//	if err != nil {
+	//		return err
+	//	}
+	//	//v.DataLatch.Unlock()
+	//	//bp.mu.Unlock()
+	//}
 	return nil
 }
 
