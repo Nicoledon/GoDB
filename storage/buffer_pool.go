@@ -142,12 +142,11 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		frame := bp.pageMap.pageManager[index]
 		dirty := bp.pageMap.pageManager[index].dirty
 		InitNode(frame, pageID)
-		//frame.DataLatch.Lock()
 		bp.pageMap.pageManager[pageID] = frame
-		//frame.DataLatch.Unlock()
 		delete(bp.pageMap.pageManager, index)
 		if dirty {
 			WritePageOut(bp, index, frame)
+			frame.dirty = false
 		}
 		frame.PageLatch.Lock()
 		bp.mu.Unlock()
@@ -170,6 +169,7 @@ func (bp *BufferPool) UnpinPage(frame *PageFrame, setDirty bool) {
 	}
 	if frame.pins == 0 {
 		frame.evictable = true
+		frame.ref = false
 		bp.cond.Signal()
 	}
 	//frame.DataLatch.Unlock()
