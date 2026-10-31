@@ -77,6 +77,10 @@ func (b *Bitmap) LoadBit(i int) bool {
 //
 // Returns the index of the first zero bit found, or -1 if the bitmap is entirely full.
 func (b *Bitmap) FindFirstZero(startHint int) int {
+	if startHint >= b.numBits {
+		panic("fuck")
+		return -1
+	}
 	for i := startHint; i < b.numBits; i++ {
 		if !b.LoadBit(i) {
 			return i
@@ -90,6 +94,9 @@ func (b *Bitmap) FindFirstZero(startHint int) int {
 	return -1
 }
 func (b *Bitmap) FindFirstOne(startHint int) int {
+	if startHint >= b.numBits {
+		panic("fuck")
+	}
 	for i := startHint; i < b.numBits; i++ {
 		if b.LoadBit(i) {
 			return i
@@ -97,6 +104,19 @@ func (b *Bitmap) FindFirstOne(startHint int) int {
 	}
 	for i := 0; i < startHint; i++ {
 		if b.LoadBit(i) {
+			return i
+		}
+	}
+	return -1
+}
+func FindFirstAllocate(allocateBitmap *Bitmap, deletedBitmap *Bitmap, startHint int) int {
+	if startHint >= allocateBitmap.numBits {
+
+		panic("s")
+		return -1
+	}
+	for i := startHint; i < allocateBitmap.numBits; i++ {
+		if allocateBitmap.LoadBit(i) && !deletedBitmap.LoadBit(i) {
 			return i
 		}
 	}

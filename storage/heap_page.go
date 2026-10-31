@@ -182,6 +182,14 @@ func (hp HeapPage) FindFreeSlot() int {
 	find := allocatedView.FindFirstZero(0)
 	return find
 }
+func (hp HeapPage) FindAllocatedSlot(slot int) int {
+	if !hp.success {
+		return -1
+	}
+	allocatedView, deletedView := FindAllocatedDeletedView(hp)
+	find := FindFirstAllocate(&allocatedView, &deletedView, slot)
+	return find
+}
 
 // IsAllocated checks the allocation bitmap to see if a slot is valid.
 func (hp HeapPage) IsAllocated(rid common.RecordID) bool {

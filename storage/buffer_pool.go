@@ -17,13 +17,14 @@ type pinCount int
 
 type BufferPool struct {
 	// add more fields here...
-	numPages    int
-	fileManager DBFileManager
+	NumPages    int
+	FileManager DBFileManager
 	logManager  LogManager
 	pageMap     *clock_replacer
 	mu          sync.Mutex
 	cond        *sync.Cond
 	cond_page   *sync.Cond
+	InitMap     map[int32]struct{}
 }
 
 // NewBufferPool creates a new BufferPool with a fixed capacity defined by numPages. It requires a
@@ -32,10 +33,11 @@ type BufferPool struct {
 // Hint: You will need to worry about logManager until Lab 3
 func NewBufferPool(numPages int, storageManager DBFileManager, logManager LogManager) *BufferPool {
 	pool := BufferPool{
-		numPages:    numPages,
-		fileManager: storageManager,
+		NumPages:    numPages,
+		FileManager: storageManager,
 		logManager:  logManager,
 		pageMap:     NewClockreplacer(numPages),
+		InitMap:     make(map[int32]struct{}),
 	}
 	pool.cond = sync.NewCond(&pool.mu)
 	pool.cond_page = sync.NewCond(&pool.mu)
@@ -44,7 +46,7 @@ func NewBufferPool(numPages int, storageManager DBFileManager, logManager LogMan
 
 // StorageManager returns the underlying disk manager.
 func (bp *BufferPool) StorageManager() DBFileManager {
-	return bp.fileManager
+	return bp.FileManager
 }
 
 func InitNode(node *PageFrame, recordID common.PageID) {
@@ -57,18 +59,19 @@ func InitNode(node *PageFrame, recordID common.PageID) {
 }
 
 func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
-	file, err := bp.fileManager.GetDBFile(pageID.Oid)
+	file, err := bp.FileManager.GetDBFile(pageID.Oid)
 	if err != nil {
 		panic("readpageIN panic")
 	}
 	err = file.ReadPage(int(pageID.PageNum), frame.Bytes[:])
 	if err != nil {
+		println(err)
 		panic("readpageIN panic")
 	}
 }
 
 func WritePageOut(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
-	file, err := bp.fileManager.GetDBFile(pageID.Oid)
+	file, err := bp.FileManager.GetDBFile(pageID.Oid)
 	if err != nil {
 		panic("readpageIN panic")
 	}
@@ -80,26 +83,26 @@ func WritePageOut(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 
 func DeleteEvictablePage(bp *BufferPool) (common.PageID, *PageFrame, bool) {
 	maxtime := 2000
-	if maxtime < bp.numPages*2 {
-		maxtime = bp.numPages * 2
+	if maxtime < bp.NumPages*2 {
+		maxtime = bp.NumPages * 2
 	}
 	for {
 		for i := 0; i < maxtime; i++ {
 			hand := bp.pageMap.clock_hand
 			if !bp.pageMap.clock_page[hand].valid {
-				bp.pageMap.clock_hand = (hand + 1) % bp.numPages
+				bp.pageMap.clock_hand = (hand + 1) % bp.NumPages
 				return common.PageID{}, bp.pageMap.clock_page[hand], true
 			} else if bp.pageMap.clock_page[hand].evictable && !bp.pageMap.clock_page[hand].ref {
-				bp.pageMap.clock_hand = (hand + 1) % bp.numPages
+				bp.pageMap.clock_hand = (hand + 1) % bp.NumPages
 				return bp.pageMap.clock_page[hand].pageID, bp.pageMap.clock_page[hand], true
 			} else if bp.pageMap.clock_page[hand].evictable && bp.pageMap.clock_page[hand].ref {
 				bp.pageMap.clock_page[hand].ref = false
 			}
 			if bp.pageMap.clock_page[hand].evictable && i > 500 {
-				bp.pageMap.clock_hand = (hand + 1) % bp.numPages
+				bp.pageMap.clock_hand = (hand + 1) % bp.NumPages
 				return bp.pageMap.clock_page[hand].pageID, bp.pageMap.clock_page[hand], true
 			}
-			hand = (hand + 1) % bp.numPages
+			hand = (hand + 1) % bp.NumPages
 			bp.pageMap.clock_hand = hand
 		}
 		bp.cond.Wait()
@@ -131,7 +134,7 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 			page.PageLatch.Lock()
 			page.PageLatch.Unlock()
 			return page, nil
-		} else if len(bp.pageMap.pageManager) < bp.numPages {
+		} else if len(bp.pageMap.pageManager) < bp.NumPages {
 			_, frame, _ := DeleteEvictablePage(bp)
 			InitNode(frame, pageID)
 			bp.pageMap.pageManager[pageID] = frame
@@ -196,7 +199,7 @@ func (bp *BufferPool) FlushAllPages() error {
 			v.evictable = false
 		}
 		v.PageLatch.Lock()
-		file, _ := bp.fileManager.GetDBFile(v.pageID.Oid)
+		file, _ := bp.FileManager.GetDBFile(v.pageID.Oid)
 		err := file.WritePage(int(v.pageID.PageNum), v.Bytes[:])
 		v.PageLatch.Unlock()
 		v.pins -= 1

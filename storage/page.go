@@ -19,7 +19,6 @@ type PageFrame struct {
 	Bytes [common.PageSize]byte
 	// PageLatch protects the content of the page from concurrent access.
 	PageLatch sync.RWMutex
-	DataLatch sync.RWMutex
 	// Hint: You will need to add fields and synchronization structures here to track the state of this page.
 	AllocatedBitmapStart int
 	AllocatedBitmapLen   int
@@ -34,7 +33,6 @@ type PageFrame struct {
 	ref                  bool
 	evictable            bool
 	valid                bool
-	//PageLock sync.Mutex
 }
 
 // Detect system endianness -- compiler should statically replace this with a constant
