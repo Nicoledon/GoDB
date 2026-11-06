@@ -178,7 +178,10 @@ type TableHeapIterator struct {
 
 // IsNil returns true if the TableHeapIterator is the default, uninitialized value
 func (it *TableHeapIterator) IsNil() bool {
-	panic("unimplemented")
+	if it.tableHeap == nil {
+		return true
+	}
+	return false
 }
 
 // Next advances the iterator to the next valid tuple.
@@ -244,10 +247,18 @@ func (it *TableHeapIterator) CurrentRID() common.RecordID {
 
 // CurrentRID returns the first error encountered during iteration, if any.
 func (it *TableHeapIterator) Error() error {
-	panic("unimplemented")
+	return ErrTupleDeleted
 }
 
 // Close releases any resources associated with the TableHeapIterator
 func (it *TableHeapIterator) Close() error {
+	file, err := it.tableHeap.bufferPool.FileManager.GetDBFile(it.oid)
+	if err != nil {
+		return it.Error()
+	}
+	err = file.Close()
+	if err != nil {
+		return it.Error()
+	}
 	return nil
 }

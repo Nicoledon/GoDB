@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"mit.edu/dsg/godb/common"
 	"mit.edu/dsg/godb/indexing"
 	"mit.edu/dsg/godb/planner"
 	"mit.edu/dsg/godb/storage"
@@ -11,32 +12,55 @@ import (
 // (e.g., "SELECT * FROM users WHERE id = 5").
 type IndexLookupExecutor struct {
 	// Fill me in!
+	plan      *planner.IndexLookupNode
+	index     indexing.Index
+	tableHeap *TableHeap
+	ctx       *ExecutorContext
+	output    []common.RecordID
 }
 
 func NewIndexLookupExecutor(plan *planner.IndexLookupNode, index indexing.Index, tableHeap *TableHeap) *IndexLookupExecutor {
-	panic("unimplemented")
+	return &IndexLookupExecutor{
+		plan:      plan,
+		index:     index,
+		tableHeap: tableHeap,
+	}
 }
 
 func (e *IndexLookupExecutor) PlanNode() planner.PlanNode {
-	panic("unimplemented")
+	return e.plan
 }
 
 func (e *IndexLookupExecutor) Init(ctx *ExecutorContext) error {
-	panic("unimplemented")
+	e.output = make([]common.RecordID, 0)
+	e.ctx = ctx
+	e.output, _ = e.index.ScanKey(e.plan.EqualityKey, e.output, e.ctx.txn)
+	return nil
 }
 
 func (e *IndexLookupExecutor) Next() bool {
-	panic("unimplemented")
+	if len(e.output) == 0 {
+		return false
+	}
+	return true
 }
 
 func (e *IndexLookupExecutor) Current() storage.Tuple {
-	panic("unimplemented")
+	item := e.output[0]
+	e.output = e.output[1:]
+	buffer := make([]byte, e.tableHeap.desc.BytesPerTuple())
+	err := e.tableHeap.ReadTuple(e.ctx.txn, item, buffer, e.plan.ForUpdate)
+	//print("output :%x", e.output)
+	if err != nil {
+		return storage.Tuple{}
+	}
+	return storage.FromRawTuple(buffer, e.tableHeap.desc, item)
 }
 
 func (e *IndexLookupExecutor) Close() error {
-	panic("unimplemented")
+	return nil
 }
 
 func (e *IndexLookupExecutor) Error() error {
-	panic("unimplemented")
+	return nil
 }

@@ -3,38 +3,59 @@ package execution
 import (
 	"mit.edu/dsg/godb/planner"
 	"mit.edu/dsg/godb/storage"
+	"mit.edu/dsg/godb/transaction"
 )
 
 // SeqScanExecutor implements a sequential scan over a table.
 type SeqScanExecutor struct {
 	// Fill me in!
+	plan      *planner.SeqScanNode
+	tableHeap *TableHeap
+	iter      *TableHeapIterator
+	ctx       *ExecutorContext
+	tuple     storage.RawTuple
 }
 
 // NewSeqScanExecutor creates a new SeqScanExecutor.
 func NewSeqScanExecutor(plan *planner.SeqScanNode, tableHeap *TableHeap) *SeqScanExecutor {
-	panic("unimplemented")
+	return &SeqScanExecutor{
+		plan:      plan,
+		tableHeap: tableHeap,
+	}
 }
 
 func (e *SeqScanExecutor) PlanNode() planner.PlanNode {
-	panic("unimplemented")
+
+	return e.plan
 }
 
 func (e *SeqScanExecutor) Init(context *ExecutorContext) error {
-	panic("unimplemented")
+	e.ctx = context
+	item, _ := e.tableHeap.Iterator(e.ctx.txn, transaction.LockModeS, make([]byte, e.tableHeap.desc.BytesPerTuple()))
+	e.iter = &item
+	return nil
 }
 
 func (e *SeqScanExecutor) Next() bool {
-	panic("unimplemented")
+	if e.iter.Next() {
+		e.tuple = e.iter.CurrentTuple()
+		return true
+	}
+	return false
 }
 
 func (e *SeqScanExecutor) Current() storage.Tuple {
-	panic("unimplemented")
+	return storage.FromRawTuple(e.tuple, e.tableHeap.desc, e.iter.CurrentRID())
 }
 
 func (e *SeqScanExecutor) Error() error {
-	panic("unimplemented")
+	return nil
 }
 
 func (e *SeqScanExecutor) Close() error {
-	panic("unimplemented")
+	err := e.iter.Close()
+	if err != nil {
+		return err
+	}
+	return nil
 }
