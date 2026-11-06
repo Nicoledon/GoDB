@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"fmt"
 	"sync"
 
 	"mit.edu/dsg/godb/common"
@@ -24,7 +25,7 @@ type BufferPool struct {
 	mu          sync.Mutex
 	cond        *sync.Cond
 	cond_page   *sync.Cond
-	InitMap     map[int32]struct{}
+	InitMap     map[common.PageID]struct{}
 }
 
 // NewBufferPool creates a new BufferPool with a fixed capacity defined by numPages. It requires a
@@ -37,7 +38,7 @@ func NewBufferPool(numPages int, storageManager DBFileManager, logManager LogMan
 		FileManager: storageManager,
 		logManager:  logManager,
 		pageMap:     NewClockreplacer(numPages),
-		InitMap:     make(map[int32]struct{}),
+		InitMap:     make(map[common.PageID]struct{}),
 	}
 	pool.cond = sync.NewCond(&pool.mu)
 	pool.cond_page = sync.NewCond(&pool.mu)
@@ -73,12 +74,16 @@ func ReadPageIN(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 func WritePageOut(bp *BufferPool, pageID common.PageID, frame *PageFrame) {
 	file, err := bp.FileManager.GetDBFile(pageID.Oid)
 	if err != nil {
-		panic("readpageIN panic")
+		// 把真正的 err 打印出来，同时看看是哪个页写失败了
+		panic(fmt.Sprintf("WritePageOut: WritePage failed for OID %d, PageNum %d: %v", pageID.Oid, pageID.PageNum, err))
 	}
+
 	err = file.WritePage(int(pageID.PageNum), frame.Bytes[:])
 	if err != nil {
-		panic("readpageIN panic")
+		// 把真正的 err 打印出来，同时看看是哪个页写失败了
+		panic(fmt.Sprintf("WritePageOut: WritePage failed for OID %d, PageNum %d: %v", pageID.Oid, pageID.PageNum, err))
 	}
+
 }
 
 func DeleteEvictablePage(bp *BufferPool) (common.PageID, *PageFrame, bool) {

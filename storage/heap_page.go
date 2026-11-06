@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/binary"
+	"fmt"
 	"unsafe"
 
 	"mit.edu/dsg/godb/common"
@@ -146,6 +147,19 @@ func InitializeHeapPage(desc *RawTupleDesc, frame *PageFrame) {
 	copy(frame.Bytes[deletestart:deletesend], zeros)
 }
 
+func InitializeHeapPageMetadata(desc *RawTupleDesc, frame *PageFrame) {
+	RowSize := CalculateMaxTuples(desc.bytesPerRow)
+	var entry int = (RowSize + 63) / 64
+	allocedend := 16 + entry*8
+	padding := 20 + entry*8
+	padding = common.Align8(padding) - padding
+	deletestart := allocedend + 4 + padding
+	frame.AllocatedBitmapStart = 16
+	frame.AllocatedBitmapLen = entry*8 + 4
+	frame.DeletedBitmapStart = deletestart
+	frame.DeletedBitmapLen = entry*8 + 4
+	frame.RowLens = desc.bytesPerRow
+}
 func (frame *PageFrame) AsHeapPage() HeapPage {
 	return HeapPage{
 		frame,
@@ -180,6 +194,10 @@ func (hp HeapPage) FindFreeSlot() int {
 	}
 	allocatedView, _ := FindAllocatedDeletedView(hp)
 	find := allocatedView.FindFirstZero(0)
+	if allocatedView.numBits <= 0 {
+		fmt.Printf("Error: PageID %d has invalid numBits: %d\n", hp.pageID, allocatedView.numBits)
+		panic("erro")
+	}
 	return find
 }
 func (hp HeapPage) FindAllocatedSlot(slot int) int {

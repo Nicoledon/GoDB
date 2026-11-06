@@ -73,6 +73,9 @@ func (e *BlockNestedLoopJoinExecutor) Next() bool {
 		bytes := make([]byte, e.desc.BytesPerTuple())
 		tuple := storage.MergeTuples(bytes, e.desc, e.left.Current(), e.right.Current())
 		pred := e.plan.Predicate.Eval(tuple)
+		if pred.IsNull() {
+			continue
+		}
 		if pred.IntValue() == 1 {
 			e.pred = tuple
 			return true

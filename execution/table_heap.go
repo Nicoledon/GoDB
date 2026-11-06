@@ -57,14 +57,19 @@ func (tableHeap *TableHeap) InsertTuple(txn *transaction.TransactionContext, row
 		if tableHeap.PageNum >= tableHeap.cap {
 			tableHeap.cap += 1
 			file, _ := tableHeap.bufferPool.FileManager.GetDBFile(tableHeap.oid)
-			_, _ = file.AllocatePage(1)
+			_, err := file.AllocatePage(1)
+			if err != nil {
+				panic("f")
+			}
 		}
 		page, _ := tableHeap.bufferPool.GetPage(common.PageID{Oid: tableHeap.oid, PageNum: tableHeap.PageNum})
+		storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 		page.PageLatch.Lock()
-		_, ok := tableHeap.bufferPool.InitMap[tableHeap.PageNum]
+
+		_, ok := tableHeap.bufferPool.InitMap[common.PageID{tableHeap.oid, tableHeap.PageNum}]
 		if !ok {
 			storage.InitializeHeapPage(tableHeap.desc, page)
-			tableHeap.bufferPool.InitMap[tableHeap.PageNum] = struct{}{}
+			tableHeap.bufferPool.InitMap[common.PageID{tableHeap.oid, tableHeap.PageNum}] = struct{}{}
 		}
 		HeapPage := page.AsHeapPage()
 		pos := HeapPage.FindFreeSlot()
@@ -92,6 +97,7 @@ var ErrTupleDeleted = errors.New("tuple has been deleted")
 // DeleteTuple marks a tuple as deleted in the TableHeap. If the tuple has been deleted, return ErrTupleDeleted
 func (tableHeap *TableHeap) DeleteTuple(txn *transaction.TransactionContext, rid common.RecordID) error {
 	page, _ := tableHeap.bufferPool.GetPage(rid.PageID)
+	storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 	page.PageLatch.Lock()
 	HeapPage := page.AsHeapPage()
 	if HeapPage.IsDeleted(rid) {
@@ -109,6 +115,8 @@ func (tableHeap *TableHeap) DeleteTuple(txn *transaction.TransactionContext, rid
 // exclusive lock instead of shared. If the tuple has been deleted, return ErrTupleDeleted
 func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid common.RecordID, buffer []byte, forUpdate bool) error {
 	page, _ := tableHeap.bufferPool.GetPage(rid.PageID)
+
+	storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 	if forUpdate {
 		page.PageLatch.Lock()
 	} else {
@@ -138,6 +146,7 @@ func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid c
 // UpdateTuple updates a tuple in-place with new binary data. If the tuple has been deleted, return ErrTupleDeleted.
 func (tableHeap *TableHeap) UpdateTuple(txn *transaction.TransactionContext, rid common.RecordID, updatedTuple storage.RawTuple) error {
 	page, _ := tableHeap.bufferPool.GetPage(rid.PageID)
+	storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 	page.PageLatch.Lock()
 	HeapPage := page.AsHeapPage()
 	if HeapPage.IsDeleted(rid) {
@@ -189,12 +198,13 @@ func (it *TableHeapIterator) IsNil() bool {
 func (it *TableHeapIterator) Next() bool {
 	it.tableHeap.dataLock.Lock()
 	for {
-		_, ok := it.tableHeap.bufferPool.InitMap[int32(it.countPage)]
+		_, ok := it.tableHeap.bufferPool.InitMap[common.PageID{it.tableHeap.oid, int32(it.countPage)}]
 		if !ok {
 			it.tableHeap.dataLock.Unlock()
 			return false
 		}
 		page, _ := it.tableHeap.bufferPool.GetPage(common.PageID{Oid: it.oid, PageNum: int32(it.countPage)})
+		storage.InitializeHeapPageMetadata(it.tableHeap.desc, page)
 		page.PageLatch.RLock()
 		find := page.AsHeapPage().FindAllocatedSlot(it.countPos)
 		if find == -1 {
@@ -252,13 +262,13 @@ func (it *TableHeapIterator) Error() error {
 
 // Close releases any resources associated with the TableHeapIterator
 func (it *TableHeapIterator) Close() error {
-	file, err := it.tableHeap.bufferPool.FileManager.GetDBFile(it.oid)
-	if err != nil {
-		return it.Error()
-	}
-	err = file.Close()
-	if err != nil {
-		return it.Error()
-	}
+	//file, err := it.tableHeap.bufferPool.FileManager.GetDBFile(it.oid)
+	//if err != nil {
+	//	return it.Error()
+	//}
+	//err = file.Close()
+	//if err != nil {
+	//	return it.Error()
+	//}
 	return nil
 }
