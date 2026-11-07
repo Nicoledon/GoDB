@@ -14,24 +14,29 @@ const blockSize = 1 << 15
 // to find matches. This reduces the number of times the right child is sequentially scanned.
 type BlockNestedLoopJoinExecutor struct {
 	// Fill me in!
-	plan  *planner.NestedLoopJoinNode
-	left  Executor
-	right Executor
-	count common.Value
-	ctx   *ExecutorContext
-	desc  *storage.RawTupleDesc
-	pred  storage.Tuple
-	cnt   int
+	plan       *planner.NestedLoopJoinNode
+	left       Executor
+	right      Executor
+	count      common.Value
+	ctx        *ExecutorContext
+	desc       *storage.RawTupleDesc
+	pred       storage.Tuple
+	init_state bool
+	tuples     []storage.Tuple
+	index      int
+	current    storage.Tuple
 }
 
 // NewBlockNestedLoopJoinExecutor creates a new BlockNestedLoopJoinExecutor.
 func NewBlockNestedLoopJoinExecutor(plan *planner.NestedLoopJoinNode, left Executor, right Executor) *BlockNestedLoopJoinExecutor {
 	return &BlockNestedLoopJoinExecutor{
-		plan:  plan,
-		left:  left,
-		right: right,
-		count: common.NewIntValue(0),
-		cnt:   0,
+		plan:       plan,
+		left:       left,
+		right:      right,
+		count:      common.NewIntValue(0),
+		init_state: true,
+		index:      0,
+		tuples:     make([]storage.Tuple, 0),
 	}
 }
 
@@ -50,38 +55,60 @@ func (e *BlockNestedLoopJoinExecutor) Init(ctx *ExecutorContext) error {
 	if err != nil {
 		return err
 	}
+	e.init_state = true
+	e.index = 0
+	e.tuples = make([]storage.Tuple, 0)
+	rightdesc := storage.NewRawTupleDesc(e.right.PlanNode().OutputSchema())
+	for e.right.Next() {
+		e.tuples = append(e.tuples, e.right.Current().DeepCopy(rightdesc))
+	}
+	if len(e.tuples) == 0 {
+		e.init_state = false
+	}
+	if !e.left.Next() {
+		e.init_state = false
+	}
+	e.current = e.left.Current()
 	return nil
 }
 
+func (e *BlockNestedLoopJoinExecutor) updateIndex() {
+	if e.index == len(e.tuples)-1 {
+		e.index = 0
+		if !e.left.Next() {
+			e.init_state = false
+		}
+		e.current = e.left.Current()
+	} else {
+		e.index += 1
+	}
+}
 func (e *BlockNestedLoopJoinExecutor) Next() bool {
-	for {
-		if e.cnt == 0 {
-			if !e.left.Next() {
-				return false
-			}
-			e.cnt += 1
-		}
-		if !e.right.Next() {
-			e.right.Init(e.ctx)
-			if !e.right.Next() {
-				return false
-			}
-			if !e.left.Next() {
-				return false
-			}
-		}
-		bytes := make([]byte, e.desc.BytesPerTuple())
-		tuple := storage.MergeTuples(bytes, e.desc, e.left.Current(), e.right.Current())
+	if !e.init_state {
+		return false
+	}
+	bytes := make([]byte, e.desc.BytesPerTuple())
+	for e.index < len(e.tuples) {
+		tuple := storage.MergeTuples(bytes, e.desc, e.current, e.tuples[e.index])
 		pred := e.plan.Predicate.Eval(tuple)
 		if pred.IsNull() {
+			e.updateIndex()
+			if !e.init_state {
+				return false
+			}
 			continue
 		}
 		if pred.IntValue() == 1 {
 			e.pred = tuple
+			e.updateIndex()
 			return true
 		}
+		e.updateIndex()
+		if !e.init_state {
+			return false
+		}
 	}
-
+	return false
 }
 
 func (e *BlockNestedLoopJoinExecutor) Current() storage.Tuple {
