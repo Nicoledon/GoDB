@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/puzpuzpuz/xsync/v3"
 	"mit.edu/dsg/godb/common"
 )
 
@@ -77,14 +76,14 @@ func (m DBLockMode) String() string {
 // LockManager manages the granting, releasing, and waiting of locks on database resources.
 
 type LockUint struct {
-	cond sync.Cond
+	cond *sync.Cond
 	mode DBLockMode
 	Lock sync.Mutex
 }
 type LockMetaData struct {
 	units      []*LockUint
-	update     bool
 	UpdateUnit *LockUint
+	Update     bool
 }
 type CurrentState struct {
 	mode DBLockMode
@@ -92,17 +91,27 @@ type CurrentState struct {
 }
 type LockManager struct {
 	// Add fields here
-	WaitingQueue xsync.MapOf[DBLockTag, *LockMetaData]
-	CurrentMode  xsync.MapOf[DBLockTag, []CurrentState]
+	WaitingQueue map[DBLockTag]*LockMetaData
+	CurrentMode  map[DBLockTag][]*CurrentState
 	LockPool     sync.Pool
 }
 
 // NewLockManager initializes a new LockManager.
 func NewLockManager() *LockManager {
-	return &LockManager{}
+	return &LockManager{
+		WaitingQueue: make(map[DBLockTag]*LockMetaData, 0),
+		CurrentMode:  make(map[DBLockTag][]*CurrentState, 0),
+		LockPool: sync.Pool{
+			New: func() any {
+				l := &LockUint{}
+				l.cond.L = &l.Lock
+				return l
+			},
+		},
+	}
 }
 func (lm *LockManager) CheckCompatibility(mode DBLockMode, tag DBLockTag) bool {
-	states, ok := lm.CurrentMode.Load(tag)
+	states, ok := lm.CurrentMode[tag]
 	if !ok {
 		panic("should  not be here")
 	}
@@ -131,7 +140,7 @@ func (lm *LockManager) CheckCompatibility(mode DBLockMode, tag DBLockTag) bool {
 	return true
 }
 func (lm *LockManager) CheckForUpgrade(tid common.TransactionID, mode DBLockMode, tag DBLockTag) bool {
-	items, _ := lm.CurrentMode.Load(tag)
+	items, _ := lm.CurrentMode[tag]
 	for _, item := range items {
 		if item.tid == tid {
 			switch item.mode {
@@ -148,7 +157,6 @@ func (lm *LockManager) CheckForUpgrade(tid common.TransactionID, mode DBLockMode
 				if mode == LockModeSIX || mode == LockModeX {
 					return false
 				}
-
 			case LockModeSIX:
 				if mode == LockModeX {
 					return false
@@ -165,54 +173,116 @@ func (lm *LockManager) CheckForUpgrade(tid common.TransactionID, mode DBLockMode
 // immediately, the transaction blocks until it is granted or aborted. It returns nil if the lock is successfully
 // acquired, or GoDBError(DeadlockError) in case of a (potential or detected) deadlock.
 func (lm *LockManager) Lock(tid common.TransactionID, tag DBLockTag, mode DBLockMode) error {
-	states, ok := lm.CurrentMode.Load(tag)
-	if !ok {
-		current := make([]CurrentState, 0)
-		current = append(current, CurrentState{mode: mode, tid: tid})
-		lm.CurrentMode.Store(tag, current)
+	states, ok1 := lm.CurrentMode[tag]
+	if !ok1 {
+		current := make([]*CurrentState, 0)
+		current = append(current, &CurrentState{mode: mode, tid: tid})
+		lm.CurrentMode[tag] = current
 		return nil
-	} else if lm.CheckForUpgrade(tid, mode, tag) {
-		item, ok := lm.WaitingQueue.Load(tag)
-		if !ok {
-			obj := &LockUint{mode: mode}
-			unit := LockMetaData{update: true, UpdateUnit: obj}
-			lm.WaitingQueue.Store(tag, &unit)
-			obj.cond.Wait()
-		} else {
-			item.update = true
-			item.UpdateUnit = &LockUint{mode: mode}
-			item.UpdateUnit.cond.Wait()
+	}
+	item, ok := lm.WaitingQueue[tag]
+	for _, state := range states {
+		if state.tid == tid {
+			if lm.CheckForUpgrade(tid, mode, tag) { // TODO fix the issue checkfor upgrade should do noting
+				if !ok {
+					MetaData := LockMetaData{
+						units:      make([]*LockUint, 0),
+						UpdateUnit: nil,
+					}
+					theme := &LockUint{mode: mode}
+					theme.cond = sync.NewCond(&theme.Lock)
+					theme.Lock.Lock()
+					MetaData.UpdateUnit = theme
+					MetaData.Update = true
+					lm.WaitingQueue[tag] = &MetaData
+					theme.cond.Wait()
+				} else {
+					unit := &LockUint{mode: mode}
+					unit.cond = sync.NewCond(&unit.Lock)
+					unit.Lock.Lock()
+					item.UpdateUnit = unit
+					item.Update = true
+					unit.cond.Wait()
+				}
+				states = append(states, &CurrentState{
+					mode: mode,
+					tid:  tid,
+				})
+				return nil
+			}
+			states = append(states, &CurrentState{
+				mode: mode,
+				tid:  tid,
+			})
+			return nil
 		}
-	} else if lm.CheckCompatibility(mode, tag) {
-		item, ok := lm.WaitingQueue.Load(tag)
+	}
+
+	if !lm.CheckCompatibility(mode, tag) {
 		if !ok {
-			obj := &LockUint{mode: mode}
-			units := make([]*LockUint, 0)
-			units = append(units, obj)
-			unit := LockMetaData{update: false, UpdateUnit: nil, units: units}
-			lm.WaitingQueue.Store(tag, &unit)
-			obj.cond.Wait()
+			MetaData := LockMetaData{
+				units:      make([]*LockUint, 0),
+				UpdateUnit: nil,
+			}
+			theme := &LockUint{mode: mode}
+			theme.cond = sync.NewCond(&theme.Lock)
+			theme.Lock.Lock()
+			MetaData.units = append(MetaData.units, theme)
+			lm.WaitingQueue[tag] = &MetaData
+			theme.cond.Wait()
 		} else {
-			obj := &LockUint{mode: mode}
-			item.units = append(item.units, obj)
-			item.UpdateUnit.cond.Wait()
+			unit := &LockUint{mode: mode}
+			unit.cond = sync.NewCond(&unit.Lock)
+			unit.Lock.Lock()
+			item.units = append(item.units, unit)
+			unit.cond.Wait()
 		}
-	} else {
-		states = append(states, CurrentState{
+		states = append(states, &CurrentState{
 			mode: mode,
 			tid:  tid,
 		})
+		return nil
 	}
+	states = append(states, &CurrentState{
+		mode: mode,
+		tid:  tid,
+	})
 	return nil
 }
 
 // Unlock releases the lock held by the transaction on the specified resource. If the requesting transaction does not
 // hold the specified lock, it should return GoDBError(LockNotFoundError)
 func (lm *LockManager) Unlock(tid common.TransactionID, tag DBLockTag) error {
-	panic("unimplemented")
+	states, _ := lm.CurrentMode[tag]
+	for i, state := range states {
+		if state.tid == tid {
+			states = append(states[:i], states[i+1:]...)
+			break
+		}
+	}
+	waiter, _ := lm.WaitingQueue[tag]
+	if waiter.Update {
+		waiter.Update = false
+		waiter.UpdateUnit.cond.Signal()
+	} else {
+		for len(waiter.units) > 0 {
+			if !lm.CheckCompatibility(waiter.units[0].mode, tag) {
+				waiter.units[0].cond.Signal()
+				waiter.units = waiter.units[1:]
+			}
+		}
+	}
+	return nil
 }
 
 // LockHeld checks if any transaction currently holds a lock on the given resource.
 func (lm *LockManager) LockHeld(tag DBLockTag) bool {
-	panic("unimplemented")
+	states, ok := lm.CurrentMode[tag]
+	if !ok {
+		return false
+	}
+	if len(states) > 0 {
+		return true
+	}
+	return false
 }
