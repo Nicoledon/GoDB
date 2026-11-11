@@ -174,7 +174,7 @@ func (lm *LockManager) CheckForUpgrade(tid common.TransactionID, mode DBLockMode
 // acquired, or GoDBError(DeadlockError) in case of a (potential or detected) deadlock.
 func (lm *LockManager) Lock(tid common.TransactionID, tag DBLockTag, mode DBLockMode) error {
 	states, ok1 := lm.CurrentMode[tag]
-	if !ok1 {
+	if !ok1 || len(states) <= 0 {
 		current := make([]*CurrentState, 0)
 		current = append(current, &CurrentState{mode: mode, tid: tid})
 		lm.CurrentMode[tag] = current
@@ -247,6 +247,7 @@ func (lm *LockManager) Lock(tid common.TransactionID, tag DBLockTag, mode DBLock
 		mode: mode,
 		tid:  tid,
 	})
+	lm.CurrentMode[tag] = states
 	return nil
 }
 
@@ -260,7 +261,11 @@ func (lm *LockManager) Unlock(tid common.TransactionID, tag DBLockTag) error {
 			break
 		}
 	}
-	waiter, _ := lm.WaitingQueue[tag]
+	lm.CurrentMode[tag] = states
+	waiter, ok := lm.WaitingQueue[tag]
+	if !ok {
+		return nil
+	}
 	if waiter.Update {
 		waiter.Update = false
 		waiter.UpdateUnit.cond.Signal()
