@@ -75,32 +75,34 @@ func (m DBLockMode) String() string {
 
 // LockManager manages the granting, releasing, and waiting of locks on database resources.
 
-type LockMetaData struct {
-	units      []DBLockMode
-	UpdateUnit DBLockMode
-	Update     bool
-}
+//	type LockMetaData struct {
+//		units      []DBLockMode
+//		UpdateUnit DBLockMode
+//		Update     bool
+//	}
 type CurrentState struct {
 	mode DBLockMode
 	tid  common.TransactionID
 }
 type Mode struct {
-	ModeMap []*CurrentState
-	cond    *sync.Cond
+	ModeMap       []*CurrentState
+	Cond          *sync.Cond
+	UpdateCond    *sync.Cond
+	updateCount   int
+	Count         int
+	CurretWatting map[common.TransactionID]struct{}
 }
 type LockManager struct {
 	// Add fields here
-	WaitingQueue map[DBLockTag]*LockMetaData
-	CurrentMode  map[DBLockTag]*Mode
-	LockPool     sync.Pool
-	TableLock    sync.Mutex
+	CurrentMode map[DBLockTag]*Mode
+	LockPool    sync.Pool
+	TableLock   sync.Mutex
 }
 
 // NewLockManager initializes a new LockManager.
 func NewLockManager() *LockManager {
 	locker := LockManager{
-		WaitingQueue: make(map[DBLockTag]*LockMetaData),
-		CurrentMode:  make(map[DBLockTag]*Mode),
+		CurrentMode: make(map[DBLockTag]*Mode),
 	}
 	return &locker
 }
@@ -163,13 +165,18 @@ func (lm *LockManager) CheckForUpgrade(refmode DBLockMode, mode DBLockMode) bool
 	}
 	return false
 }
-func (lm *LockManager) InState(items []*CurrentState, tid common.TransactionID) bool {
-	for _, item := range items {
-		if item.tid == tid {
-			return true
+func (lm *LockManager) WaitDie(tid common.TransactionID, items *Mode) error {
+	for key, _ := range items.CurretWatting {
+		if key < tid {
+			return common.GoDBError{Code: common.DeadlockError}
 		}
 	}
-	return false
+	for _, key := range items.ModeMap {
+		if key.tid < tid {
+			return common.GoDBError{Code: common.DeadlockError}
+		}
+	}
+	return nil
 }
 
 // Lock acquires a lock on a specific resource (Table or Tuple) with the requested mode. If the lock cannot be acquired
@@ -180,26 +187,53 @@ func (lm *LockManager) Lock(tid common.TransactionID, tag DBLockTag, mode DBLock
 	defer lm.TableLock.Unlock()
 	// case1  when there is no lock on the tid
 	items, ok := lm.CurrentMode[tag]
-	if !ok || len(items.ModeMap) == 0 {
-		lm.CurrentMode[tag] = &Mode{make([]*CurrentState, 0), sync.NewCond(&lm.TableLock)}
+	if !ok {
+		lm.CurrentMode[tag] = &Mode{make([]*CurrentState, 0), sync.NewCond(&lm.TableLock), sync.NewCond(&lm.TableLock), 0, 0, make(map[common.TransactionID]struct{})}
 		lm.CurrentMode[tag].ModeMap = append(lm.CurrentMode[tag].ModeMap, &CurrentState{mode: mode, tid: tid})
 		return nil
+	}
+	if len(items.ModeMap) == 0 {
+		lm.CurrentMode[tag].ModeMap = append(lm.CurrentMode[tag].ModeMap, &CurrentState{mode: mode, tid: tid})
+		return nil
+	}
+	for key, _ := range items.CurretWatting {
+		if key < tid {
+			return common.GoDBError{Code: common.DeadlockError}
+		}
 	}
 	// case2 when i needs to upgrade  while checkforupgrade == false
 	for _, item := range items.ModeMap {
 		if item.tid == tid && !lm.CheckForUpgrade(mode, item.mode) {
 			return nil
 		} else if item.tid == tid && lm.CheckForUpgrade(mode, item.mode) {
-			_, ok1 := lm.WaitingQueue[tag]
-			if !ok1 {
-				MetaData := &LockMetaData{units: make([]DBLockMode, 0), UpdateUnit: mode, Update: true}
-				lm.WaitingQueue[tag] = MetaData
+			if len(items.ModeMap) == 1 {
+				for i, val := range lm.CurrentMode[tag].ModeMap {
+					if val.tid == tid {
+						lm.CurrentMode[tag].ModeMap[i].mode = mode
+					}
+				}
+				return nil
 			}
+			if lm.CurrentMode[tag].updateCount > 0 {
+				return common.GoDBError{Code: common.DeadlockError}
+			}
+			lm.CurrentMode[tag].updateCount = 1
+			if lm.WaitDie(tid, items) != nil {
+				lm.CurrentMode[tag].updateCount = 0
+				delete(lm.CurrentMode[tag].CurretWatting, tid)
+				return common.GoDBError{Code: common.DeadlockError}
+			}
+			lm.CurrentMode[tag].CurretWatting[tid] = struct{}{}
 			for !lm.CheckCompatibility(mode, tag, tid) {
-				lm.WaitingQueue[tag].Update = true
-				lm.WaitingQueue[tag].UpdateUnit = mode
-				lm.CurrentMode[tag].cond.Wait()
+				lm.CurrentMode[tag].UpdateCond.Wait()
+				if lm.WaitDie(tid, items) != nil {
+					lm.CurrentMode[tag].updateCount = 0
+					delete(lm.CurrentMode[tag].CurretWatting, tid)
+					return common.GoDBError{Code: common.DeadlockError}
+				}
 			}
+			delete(lm.CurrentMode[tag].CurretWatting, tid)
+			lm.CurrentMode[tag].updateCount -= 1
 			for i, val := range lm.CurrentMode[tag].ModeMap {
 				if val.tid == tid {
 					lm.CurrentMode[tag].ModeMap[i].mode = mode
@@ -209,16 +243,24 @@ func (lm *LockManager) Lock(tid common.TransactionID, tag DBLockTag, mode DBLock
 		}
 	}
 	//case3  while  checkcompatible === false
-	if !lm.CheckCompatibility(mode, tag, tid) {
-		_, ok1 := lm.WaitingQueue[tag]
-		if !ok1 {
-			MetaData := &LockMetaData{units: make([]DBLockMode, 0), UpdateUnit: mode, Update: true}
-			lm.WaitingQueue[tag] = MetaData
+	if !lm.CheckCompatibility(mode, tag, tid) || lm.CurrentMode[tag].updateCount != 0 {
+		lm.CurrentMode[tag].Count += 1
+		if lm.WaitDie(tid, items) != nil {
+			lm.CurrentMode[tag].Count -= 1
+			delete(lm.CurrentMode[tag].CurretWatting, tid)
+			return common.GoDBError{Code: common.DeadlockError}
 		}
-		for !lm.CheckCompatibility(mode, tag, tid) {
-			lm.WaitingQueue[tag].units = append(lm.WaitingQueue[tag].units, mode)
-			lm.CurrentMode[tag].cond.Wait()
+		lm.CurrentMode[tag].CurretWatting[tid] = struct{}{}
+		for !lm.CheckCompatibility(mode, tag, tid) || lm.CurrentMode[tag].updateCount != 0 {
+			lm.CurrentMode[tag].Cond.Wait() // TODO fix the instate issue
+			if lm.WaitDie(tid, items) != nil {
+				lm.CurrentMode[tag].Count -= 1
+				delete(lm.CurrentMode[tag].CurretWatting, tid)
+				return common.GoDBError{Code: common.DeadlockError}
+			}
 		}
+		delete(lm.CurrentMode[tag].CurretWatting, tid)
+		lm.CurrentMode[tag].Count -= 1
 		lm.CurrentMode[tag].ModeMap = append(lm.CurrentMode[tag].ModeMap, &CurrentState{mode: mode, tid: tid})
 		return nil
 	}
@@ -231,31 +273,25 @@ func (lm *LockManager) Lock(tid common.TransactionID, tag DBLockTag, mode DBLock
 func (lm *LockManager) Unlock(tid common.TransactionID, tag DBLockTag) error {
 	lm.TableLock.Lock()
 	defer lm.TableLock.Unlock()
-	items, _ := lm.CurrentMode[tag]
+
+	items, ok := lm.CurrentMode[tag]
+	if !ok || len(items.ModeMap) == 0 {
+		return common.GoDBError{Code: common.LockNotFoundError}
+	}
+
 	for i, item := range items.ModeMap {
 		if item.tid == tid {
 			lm.CurrentMode[tag].ModeMap = append(lm.CurrentMode[tag].ModeMap[:i], lm.CurrentMode[tag].ModeMap[i+1:]...)
-			break
+			if lm.CurrentMode[tag].updateCount != 0 {
+				lm.CurrentMode[tag].UpdateCond.Broadcast()
+			}
+			if lm.CurrentMode[tag].Count != 0 {
+				lm.CurrentMode[tag].Cond.Broadcast()
+			}
+			return nil
 		}
 	}
-	queue, ok := lm.WaitingQueue[tag]
-	if !ok {
-		return nil
-	}
-	if queue.Update && lm.CheckCompatibility(queue.UpdateUnit, tag, tid) {
-		queue.Update = false
-		lm.CurrentMode[tag].cond.Signal()
-		return nil
-	}
-	for len(lm.WaitingQueue[tag].units) > 0 {
-		if lm.CheckCompatibility(lm.WaitingQueue[tag].units[0], tag, tid) {
-			lm.WaitingQueue[tag].units = lm.WaitingQueue[tag].units[1:]
-			lm.CurrentMode[tag].cond.Signal()
-		} else {
-			break
-		}
-	}
-	return nil
+	return common.GoDBError{Code: common.LockNotFoundError}
 }
 
 // LockHeld checks if any transaction currently holds a lock on the given resource.
