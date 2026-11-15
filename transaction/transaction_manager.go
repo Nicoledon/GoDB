@@ -41,12 +41,19 @@ type TransactionManager struct {
 
 // NewTransactionManager initializes the transaction manager.
 func NewTransactionManager(logManager storage.LogManager, bufferPool *storage.BufferPool, lockManager *LockManager) *TransactionManager {
-	panic("unimplemented")
+	return &TransactionManager{
+		logManager:  logManager,
+		bufferPool:  bufferPool,
+		lockManager: lockManager,
+	}
 }
 
 // Begin starts a new transaction and returns the initialized context.
 func (tm *TransactionManager) Begin() (*TransactionContext, error) {
-	return nil, nil
+
+	tm.nextTxnID.Add(1)
+	var tid common.TransactionID = common.TransactionID(tm.nextTxnID.Load())
+	return NewTestTransactionContext(tm.lockManager, tid), nil
 }
 
 // Commit completes a transaction and makes its effects durable and visible.
@@ -67,9 +74,9 @@ func (tm *TransactionManager) Abort(txn *TransactionContext) error {
 		cleanupTask := txn.abortActions[i]
 		cleanupTask.Target.Invoke(cleanupTask.Type, cleanupTask.Key, cleanupTask.RID)
 	}
-
 	fmt.Printf("Aborting transaction %d\n", txn.ID())
 	// Add your implementation here
+
 	return nil
 }
 
