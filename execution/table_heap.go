@@ -53,7 +53,12 @@ func (tableHeap *TableHeap) StorageSchema() *storage.RawTupleDesc {
 // TODO :: transcation lock need to fix
 // InsertTuple inserts a tuple into the TableHeap. It should find a free space, allocating if needed, and return the found slot.
 func (tableHeap *TableHeap) InsertTuple(txn *transaction.TransactionContext, row storage.RawTuple) (common.RecordID, error) {
-
+	if txn != nil {
+		err := txn.AcquireLock(transaction.NewTableLockTag(id.Oid), transaction.LockModeIX)
+		if err != nil {
+			panic("can't not reach here")
+		}
+	}
 	for {
 		tableHeap.dataLock.Lock()
 		if tableHeap.PageNum >= tableHeap.cap {
@@ -90,10 +95,7 @@ func (tableHeap *TableHeap) InsertTuple(txn *transaction.TransactionContext, row
 			page.PageLatch.Unlock()
 			tableHeap.bufferPool.UnpinPage(page, true)
 			if txn != nil {
-				err := txn.AcquireLock(transaction.NewTableLockTag(id.Oid), transaction.LockModeIX)
-				if err != nil {
-					panic("can't not reach here")
-				}
+
 				err = txn.AcquireLock(transaction.NewTupleLockTag(id), transaction.LockModeX)
 				if err != nil {
 					panic("can't not reach here")
