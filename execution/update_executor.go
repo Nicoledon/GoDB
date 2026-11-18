@@ -68,7 +68,6 @@ func (e *UpdateExecutor) Next() bool {
 		OldBuff := make(storage.RawTuple, e.tableHeap.desc.BytesPerTuple())
 		_ = e.tableHeap.ReadTuple(e.ctx.txn, e.child.Current().RID(), OldBuff, true)
 		OldTuple := storage.FromRawTuple(OldBuff, e.tableHeap.desc, e.child.Current().RID())
-		// 把旧的tuple 读出来
 
 		values := make([]common.Value, 0)
 		for _, expr := range e.plan.Expressions {

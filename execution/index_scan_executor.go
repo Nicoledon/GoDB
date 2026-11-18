@@ -37,7 +37,17 @@ func (e *IndexScanExecutor) Init(ctx *ExecutorContext) error {
 }
 
 func (e *IndexScanExecutor) Next() bool {
-	return e.iter.Next()
+	for e.iter.Next() {
+		buffer := make([]byte, e.tableHeap.desc.BytesPerTuple())
+		err := e.tableHeap.ReadTuple(e.ctx.txn, e.iter.Value(), buffer, e.plan.ForUpdate)
+		if err != nil {
+			panic("should not be here")
+		}
+		//tupleKey := indexing.NewKey(buffer,e.tableHeap.desc)
+		//if e.plan.Direction
+		//if e.plan.StartKey.Compare()
+	}
+	return false
 }
 
 func (e *IndexScanExecutor) Current() storage.Tuple {

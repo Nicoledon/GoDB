@@ -5,6 +5,7 @@ import (
 	"mit.edu/dsg/godb/indexing"
 	"mit.edu/dsg/godb/planner"
 	"mit.edu/dsg/godb/storage"
+	"mit.edu/dsg/godb/transaction"
 )
 
 // IndexLookupExecutor implements a Point Lookup using an index. Unlike a full Index Scan, which iterates over a
@@ -17,6 +18,7 @@ type IndexLookupExecutor struct {
 	tableHeap *TableHeap
 	ctx       *ExecutorContext
 	output    []common.RecordID
+	tuple     common.RecordID
 }
 
 func NewIndexLookupExecutor(plan *planner.IndexLookupNode, index indexing.Index, tableHeap *TableHeap) *IndexLookupExecutor {
@@ -34,23 +36,68 @@ func (e *IndexLookupExecutor) PlanNode() planner.PlanNode {
 func (e *IndexLookupExecutor) Init(ctx *ExecutorContext) error {
 	e.output = make([]common.RecordID, 0)
 	e.ctx = ctx
+	if e.ctx.txn != nil {
+		if e.plan.ForUpdate {
+			err := e.ctx.txn.AcquireLock(transaction.NewTableLockTag(e.plan.TableOid), transaction.LockModeIX)
+			if err != nil {
+				return err
+			}
+		}
+		err := e.ctx.txn.AcquireLock(transaction.NewTableLockTag(e.plan.TableOid), transaction.LockModeIS)
+		if err != nil {
+			return err
+		}
+	}
 	e.output, _ = e.index.ScanKey(e.plan.EqualityKey, e.output, e.ctx.txn)
 	return nil
 }
 
 func (e *IndexLookupExecutor) Next() bool {
-	if len(e.output) == 0 {
-		return false
+	for {
+		if len(e.output) == 0 {
+			return false
+		}
+		e.tuple = e.output[0]
+		e.output = e.output[1:]
+		if e.ctx.txn != nil {
+			if e.plan.ForUpdate {
+				err := e.ctx.txn.AcquireLock(transaction.NewTupleLockTag(e.tuple), transaction.LockModeX)
+				if err != nil {
+					continue
+				}
+				buffer := make([]byte, e.tableHeap.desc.BytesPerTuple())
+				err = e.tableHeap.ReadTuple(nil, e.tuple, buffer, false)
+				if err != nil {
+					continue
+				}
+				tupleKey := indexing.NewKey(buffer, e.tableHeap.desc)
+				if !e.plan.EqualityKey.Equals(tupleKey) {
+					continue
+				}
+			} else {
+				err := e.ctx.txn.AcquireLock(transaction.NewTupleLockTag(e.tuple), transaction.LockModeS)
+				if err != nil {
+					continue
+				}
+				buffer := make([]byte, e.tableHeap.desc.BytesPerTuple())
+				err = e.tableHeap.ReadTuple(nil, e.tuple, buffer, false)
+				if err != nil {
+					continue
+				}
+				tupleKey := indexing.NewKey(buffer, e.tableHeap.desc)
+				if !e.plan.EqualityKey.Equals(tupleKey) {
+					continue
+				}
+			}
+		}
+		return true
 	}
-	return true
 }
 
 func (e *IndexLookupExecutor) Current() storage.Tuple {
-	item := e.output[0]
-	e.output = e.output[1:]
+	item := e.tuple
 	buffer := make([]byte, e.tableHeap.desc.BytesPerTuple())
 	err := e.tableHeap.ReadTuple(e.ctx.txn, item, buffer, e.plan.ForUpdate)
-	//print("output :%x", e.output)
 	if err != nil {
 		return storage.Tuple{}
 	}
