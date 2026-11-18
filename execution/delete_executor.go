@@ -5,6 +5,7 @@ import (
 	"mit.edu/dsg/godb/indexing"
 	"mit.edu/dsg/godb/planner"
 	"mit.edu/dsg/godb/storage"
+	"mit.edu/dsg/godb/transaction"
 )
 
 // DeleteExecutor executes a DELETE query.
@@ -68,7 +69,11 @@ func (e *DeleteExecutor) Next() bool {
 				rawtuple = append(rawtuple, temp...)
 			}
 			key := index.Metadata().AsKey(rawtuple)
-			err = index.DeleteEntry(key, RecordID, e.ctx.txn)
+			if e.ctx.txn == nil {
+				err = index.DeleteEntry(key, RecordID, e.ctx.txn)
+			} else {
+				e.ctx.txn.AddCommitTask(transaction.IndexTask{Key: rawtuple, Type: 1, RID: RecordID})
+			}
 			if err != nil {
 				panic("entry is not in the index")
 			}

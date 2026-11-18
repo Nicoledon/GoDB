@@ -5,6 +5,7 @@ import (
 	"mit.edu/dsg/godb/indexing"
 	"mit.edu/dsg/godb/planner"
 	"mit.edu/dsg/godb/storage"
+	"mit.edu/dsg/godb/transaction"
 )
 
 // InsertExecutor executes an INSERT query.
@@ -72,8 +73,8 @@ func (e *InsertExecutor) Next() bool {
 				rawtuple = append(rawtuple, temp...)
 			}
 			key := index.Metadata().AsKey(rawtuple)
-			//println("Insert RID: %v, Key Bytes: %x\n", RecordID.PageNum, key.RawTuple)
 			err = index.InsertEntry(key, RecordID, e.ctx.txn)
+			e.ctx.txn.AddAbortTask(transaction.IndexTask{Key: rawtuple, Type: 0, RID: RecordID})
 			if err != nil {
 				panic("insert to wrong index")
 			}
