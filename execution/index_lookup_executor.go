@@ -104,6 +104,11 @@ func (e *IndexLookupExecutor) Next() bool {
 					continue
 				}
 			}
+		} else {
+			err := e.tableHeap.ReadTuple(nil, e.tuple, e.buffer, false)
+			if err != nil {
+				continue
+			}
 		}
 		return true
 	}
