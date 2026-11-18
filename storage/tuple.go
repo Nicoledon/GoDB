@@ -117,6 +117,11 @@ type Tuple struct {
 func FromRawTuple(rawTuple RawTuple, desc *RawTupleDesc, rid common.RecordID) Tuple {
 	return Tuple{rawTuple: rawTuple, rawDesc: desc, rid: rid}
 }
+func (t Tuple) Rawtuple() RawTuple {
+	buffer := make([]byte, len(t.rawTuple))
+	copy(buffer, t.rawTuple)
+	return buffer
+}
 
 // FromValues creates a purely virtual Tuple from a list of Go values.
 // This is used when a query operator creates a brand new row (e.g., "SELECT 1, 'hello'").

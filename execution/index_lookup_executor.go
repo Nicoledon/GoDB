@@ -19,6 +19,7 @@ type IndexLookupExecutor struct {
 	ctx       *ExecutorContext
 	output    []common.RecordID
 	tuple     common.RecordID
+	buffer    []byte
 }
 
 func NewIndexLookupExecutor(plan *planner.IndexLookupNode, index indexing.Index, tableHeap *TableHeap) *IndexLookupExecutor {
@@ -36,16 +37,18 @@ func (e *IndexLookupExecutor) PlanNode() planner.PlanNode {
 func (e *IndexLookupExecutor) Init(ctx *ExecutorContext) error {
 	e.output = make([]common.RecordID, 0)
 	e.ctx = ctx
+	e.buffer = make([]byte, e.tableHeap.desc.BytesPerTuple())
 	if e.ctx.txn != nil {
 		if e.plan.ForUpdate {
 			err := e.ctx.txn.AcquireLock(transaction.NewTableLockTag(e.plan.TableOid), transaction.LockModeIX)
 			if err != nil {
 				return err
 			}
-		}
-		err := e.ctx.txn.AcquireLock(transaction.NewTableLockTag(e.plan.TableOid), transaction.LockModeIS)
-		if err != nil {
-			return err
+		} else {
+			err := e.ctx.txn.AcquireLock(transaction.NewTableLockTag(e.plan.TableOid), transaction.LockModeIS)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	e.output, _ = e.index.ScanKey(e.plan.EqualityKey, e.output, e.ctx.txn)
@@ -65,13 +68,19 @@ func (e *IndexLookupExecutor) Next() bool {
 				if err != nil {
 					continue
 				}
-				buffer := make([]byte, e.tableHeap.desc.BytesPerTuple())
-				err = e.tableHeap.ReadTuple(nil, e.tuple, buffer, false)
+				err = e.tableHeap.ReadTuple(nil, e.tuple, e.buffer, false)
 				if err != nil {
 					continue
 				}
-				tupleKey := indexing.NewKey(buffer, e.tableHeap.desc)
-				if !e.plan.EqualityKey.Equals(tupleKey) {
+				keys := make([]byte, 0)
+				for _, key := range e.index.Metadata().ProjectionList {
+					tempKey := e.tableHeap.desc.GetValue(e.buffer, key)
+					tempBuffer := make([]byte, tempKey.SizeInBytes())
+					tempKey.WriteTo(tempBuffer)
+					keys = append(keys, tempBuffer...)
+				}
+				key := indexing.NewKey(keys, e.index.Metadata().KeySchema)
+				if !e.plan.EqualityKey.Equals(key) {
 					continue
 				}
 			} else {
@@ -79,13 +88,19 @@ func (e *IndexLookupExecutor) Next() bool {
 				if err != nil {
 					continue
 				}
-				buffer := make([]byte, e.tableHeap.desc.BytesPerTuple())
-				err = e.tableHeap.ReadTuple(nil, e.tuple, buffer, false)
+				err = e.tableHeap.ReadTuple(nil, e.tuple, e.buffer, false)
 				if err != nil {
 					continue
 				}
-				tupleKey := indexing.NewKey(buffer, e.tableHeap.desc)
-				if !e.plan.EqualityKey.Equals(tupleKey) {
+				keys := make([]byte, 0)
+				for _, key := range e.index.Metadata().ProjectionList {
+					tempKey := e.tableHeap.desc.GetValue(e.buffer, key)
+					tempBuffer := make([]byte, tempKey.SizeInBytes())
+					tempKey.WriteTo(tempBuffer)
+					keys = append(keys, tempBuffer...)
+				}
+				key := indexing.NewKey(keys, e.index.Metadata().KeySchema)
+				if !e.plan.EqualityKey.Equals(key) {
 					continue
 				}
 			}
@@ -96,12 +111,7 @@ func (e *IndexLookupExecutor) Next() bool {
 
 func (e *IndexLookupExecutor) Current() storage.Tuple {
 	item := e.tuple
-	buffer := make([]byte, e.tableHeap.desc.BytesPerTuple())
-	err := e.tableHeap.ReadTuple(e.ctx.txn, item, buffer, e.plan.ForUpdate)
-	if err != nil {
-		return storage.Tuple{}
-	}
-	return storage.FromRawTuple(buffer, e.tableHeap.desc, item)
+	return storage.FromRawTuple(e.buffer, e.tableHeap.desc, item)
 }
 
 func (e *IndexLookupExecutor) Close() error {
