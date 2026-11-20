@@ -106,7 +106,6 @@ func TestTxnManager_Basic_GroupCommit(t *testing.T) {
 		for i, tag2 := range tags2 {
 			assert.True(t, lockMgr2.LockHeld(tag2), "lock %d must be held while waiting for flush", i)
 		}
-
 		// Advance flushedUntil past any LSN the TM could have appended. This single flush
 		// call unblocks all concurrent commits simultaneously — group commit.
 		mlm2.SetFlushedLSN(storage.LSN(1 << 20))

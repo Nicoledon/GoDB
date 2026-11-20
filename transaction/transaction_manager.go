@@ -53,7 +53,9 @@ func (tm *TransactionManager) Begin() (*TransactionContext, error) {
 
 	tm.nextTxnID.Add(1)
 	var tid common.TransactionID = common.TransactionID(tm.nextTxnID.Load())
-	return NewTestTransactionContext(tm.lockManager, tid), nil
+	ctx := NewTestTransactionContext(tm.lockManager, tid)
+	tm.logManager.Append(storage.NewBeginTransactionRecord(make([]byte, storage.BeginTransactionRecordSize()), tid))
+	return ctx, nil
 }
 
 // Commit completes a transaction and makes its effects durable and visible.
@@ -62,6 +64,20 @@ func (tm *TransactionManager) Commit(txn *TransactionContext) error {
 	// Execute In-Memory changes (Indexes) after flushed. Think about how this should interleave with the commit logic.
 	for _, task := range txn.commitActions {
 		task.Target.Invoke(task.Type, task.Key, task.RID)
+	}
+	lsn, err := tm.logManager.Append(storage.NewCommitRecord(make([]byte, storage.CommitRecordSize()), txn.id))
+	if err != nil {
+		return err
+	}
+	err = tm.logManager.WaitUntilFlushed(lsn)
+	if err != nil {
+		return err
+	}
+	for pid, _ := range txn.heldLocks {
+		err = txn.lm.Unlock(txn.id, pid)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -76,7 +92,59 @@ func (tm *TransactionManager) Abort(txn *TransactionContext) error {
 	}
 	fmt.Printf("Aborting transaction %d\n", txn.ID())
 	// Add your implementation here
-
+	lens := txn.logRecords.len()
+	for i := lens - 1; i >= 0; i-- {
+		events := txn.logRecords.get(i)
+		if events.RecordType() == storage.LogInsert {
+			page, _ := tm.bufferPool.GetPage(events.RID().PageID)
+			lsn, err := tm.logManager.Append(storage.NewInsertCLR(make([]byte, storage.InsertCLRSize()), events))
+			if err != nil {
+				return err
+			}
+			page.PageLatch.Lock()
+			HeapPage := page.AsHeapPage()
+			HeapPage.MarkDeleted(events.RID(), true)
+			page.MonotonicallyUpdateLSN(lsn)
+			page.PageLatch.Unlock()
+		} else if events.RecordType() == storage.LogUpdate {
+			page, _ := tm.bufferPool.GetPage(events.RID().PageID)
+			lsn, err := tm.logManager.Append(storage.NewUpdateCLR(make([]byte, storage.UpdateCLRSize(events)), events))
+			if err != nil {
+				return err
+			}
+			page.PageLatch.Lock()
+			HeapPage := page.AsHeapPage()
+			tuple := HeapPage.AccessTuple(events.RID())
+			copy(tuple, events.BeforeImage())
+			page.MonotonicallyUpdateLSN(lsn)
+			page.PageLatch.Unlock()
+		} else if events.RecordType() == storage.LogDelete {
+			page, _ := tm.bufferPool.GetPage(events.RID().PageID)
+			lsn, err := tm.logManager.Append(storage.NewDeleteCLR(make([]byte, storage.DeleteCLRSize()), events))
+			if err != nil {
+				return err
+			}
+			page.PageLatch.Lock()
+			HeapPage := page.AsHeapPage()
+			HeapPage.MarkDeleted(events.RID(), false)
+			page.MonotonicallyUpdateLSN(lsn)
+			page.PageLatch.Unlock()
+		}
+	}
+	lsn, err := tm.logManager.Append(storage.NewAbortRecord(make([]byte, storage.AbortRecordSize()), txn.id))
+	if err != nil {
+		return err
+	}
+	err = tm.logManager.WaitUntilFlushed(lsn)
+	if err != nil {
+		return err
+	}
+	for pid, _ := range txn.heldLocks {
+		err = txn.lm.Unlock(txn.id, pid)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

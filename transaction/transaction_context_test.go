@@ -15,7 +15,7 @@ import (
 func newTestContext(lm *LockManager) *TransactionContext {
 	return &TransactionContext{
 		id:         common.TransactionID(1),
-		Lm:         lm,
+		lm:         lm,
 		logRecords: newLogRecordBuffer(),
 		heldLocks:  make(map[DBLockTag]DBLockMode),
 	}
