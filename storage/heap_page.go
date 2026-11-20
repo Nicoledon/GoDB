@@ -63,13 +63,28 @@ func (hp HeapPage) RowSize() int {
 		*(*uint16)(unsafe.Pointer(&buf[0])) = uint16(0xCAFE)
 		return buf[0] == 0xCA
 	}()
-	var uNum uint32
+	var uNum uint16
 	if isBigEndian {
-		uNum = binary.BigEndian.Uint32(hp.Bytes[8:11])
+		uNum = binary.BigEndian.Uint16(hp.Bytes[8:10])
 	} else {
-		uNum = binary.LittleEndian.Uint32(hp.Bytes[8:11])
+		uNum = binary.LittleEndian.Uint16(hp.Bytes[8:10])
 	}
 	return int(uNum)
+}
+func (hp HeapPage) bitmapLayout() (allocStart, allocLen, delStart, delLen int) {
+	numSlots := hp.NumSlots()
+	if numSlots == 0 {
+		return 0, 0, 0, 0
+	}
+	entry := (numSlots + 63) / 64
+	allocStart = 16
+	allocLen = entry*8 + 4
+	allocedend := 16 + entry*8
+	padding := 20 + entry*8
+	padding = common.Align8(padding) - padding
+	delStart = allocedend + 4 + padding
+	delLen = entry*8 + 4
+	return allocStart, allocLen, delStart, delLen
 }
 func setRowSlots(RowSize uint16, frame *PageFrame) {
 	var isBigEndian = func() bool {
@@ -166,10 +181,12 @@ func (frame *PageFrame) AsHeapPage() HeapPage {
 	}
 }
 func FindAllocatedDeletedView(hp HeapPage) (allocatedView Bitmap, deletedview Bitmap) {
-	//allocatedBytes := make([]byte, hp.AllocatedBitmapLen-4)
-	//deletedBytes := make([]byte, hp.PageFrame.DeletedBitmapLen-4)
-	allocatedBytes := hp.Bytes[hp.PageFrame.AllocatedBitmapStart : hp.PageFrame.AllocatedBitmapStart+hp.AllocatedBitmapLen-4]
-	deletedBytes := hp.Bytes[hp.PageFrame.DeletedBitmapStart : hp.PageFrame.DeletedBitmapStart+hp.DeletedBitmapLen-4]
+	allocStart, allocLen, delStart, delLen := hp.bitmapLayout()
+	if allocLen == 0 {
+		return Bitmap{}, Bitmap{}
+	}
+	allocatedBytes := hp.Bytes[allocStart : allocStart+allocLen-4]
+	deletedBytes := hp.Bytes[delStart : delStart+delLen-4]
 	var allcatedNum uint32 = 0
 	var deletedNum uint32 = 0
 	var isBigEndian = func() bool {
@@ -178,18 +195,19 @@ func FindAllocatedDeletedView(hp HeapPage) (allocatedView Bitmap, deletedview Bi
 		return buf[0] == 0xCA
 	}()
 	if isBigEndian {
-		allcatedNum = binary.BigEndian.Uint32(hp.Bytes[hp.PageFrame.AllocatedBitmapStart+hp.AllocatedBitmapLen-4 : hp.PageFrame.AllocatedBitmapStart+hp.AllocatedBitmapLen])
-		deletedNum = binary.BigEndian.Uint32(hp.Bytes[hp.PageFrame.DeletedBitmapStart+hp.DeletedBitmapLen-4 : hp.PageFrame.DeletedBitmapStart+hp.DeletedBitmapLen])
+		allcatedNum = binary.BigEndian.Uint32(hp.Bytes[allocStart+allocLen-4 : allocStart+allocLen])
+		deletedNum = binary.BigEndian.Uint32(hp.Bytes[delStart+delLen-4 : delStart+delLen])
 	} else {
-		allcatedNum = binary.LittleEndian.Uint32(hp.Bytes[hp.PageFrame.AllocatedBitmapStart+hp.AllocatedBitmapLen-4 : hp.PageFrame.AllocatedBitmapStart+hp.AllocatedBitmapLen])
-		deletedNum = binary.LittleEndian.Uint32(hp.Bytes[hp.PageFrame.DeletedBitmapStart+hp.DeletedBitmapLen-4 : hp.PageFrame.DeletedBitmapStart+hp.DeletedBitmapLen])
+		allcatedNum = binary.LittleEndian.Uint32(hp.Bytes[allocStart+allocLen-4 : allocStart+allocLen])
+		deletedNum = binary.LittleEndian.Uint32(hp.Bytes[delStart+delLen-4 : delStart+delLen])
 	}
 	allocatedView = AsBitmap(allocatedBytes, int(allcatedNum))
 	deletedview = AsBitmap(deletedBytes, int(deletedNum))
 	return allocatedView, deletedview
 }
+
 func (hp HeapPage) FindFreeSlot() int {
-	if !hp.success {
+	if hp.NumSlots() == 0 {
 		return -1
 	}
 	allocatedView, _ := FindAllocatedDeletedView(hp)
@@ -201,7 +219,7 @@ func (hp HeapPage) FindFreeSlot() int {
 	return find
 }
 func (hp HeapPage) FindAllocatedSlot(slot int) int {
-	if !hp.success {
+	if hp.NumSlots() == 0 {
 		return -1
 	}
 	allocatedView, deletedView := FindAllocatedDeletedView(hp)
@@ -211,11 +229,11 @@ func (hp HeapPage) FindAllocatedSlot(slot int) int {
 
 // IsAllocated checks the allocation bitmap to see if a slot is valid.
 func (hp HeapPage) IsAllocated(rid common.RecordID) bool {
-	allocatedView, _ := FindAllocatedDeletedView(hp)
-	if allocatedView.LoadBit(int(rid.Slot)) {
-		return true
+	if hp.NumSlots() == 0 || int(rid.Slot) >= hp.NumSlots() {
+		return false
 	}
-	return false
+	allocatedView, _ := FindAllocatedDeletedView(hp)
+	return allocatedView.LoadBit(int(rid.Slot))
 }
 
 func (hp HeapPage) MarkAllocated(rid common.RecordID, allocated bool) {
@@ -230,6 +248,9 @@ func (hp HeapPage) MarkAllocated(rid common.RecordID, allocated bool) {
 }
 
 func (hp HeapPage) IsDeleted(rid common.RecordID) bool {
+	if hp.NumSlots() == 0 || int(rid.Slot) >= hp.NumSlots() {
+		return false
+	}
 	_, deletedView := FindAllocatedDeletedView(hp)
 	return deletedView.LoadBit(int(rid.Slot))
 }
@@ -240,7 +261,9 @@ func (hp HeapPage) MarkDeleted(rid common.RecordID, deleted bool) {
 }
 
 func (hp HeapPage) AccessTuple(rid common.RecordID) RawTuple {
-	AccessStart := hp.DeletedBitmapStart + hp.DeletedBitmapLen + hp.RowLens*int(rid.Slot)
-	data := hp.Bytes[AccessStart : AccessStart+hp.RowLens]
+	_, _, delStart, delLen := hp.bitmapLayout()
+	rowLen := hp.RowSize()
+	AccessStart := delStart + delLen + rowLen*int(rid.Slot)
+	data := hp.Bytes[AccessStart : AccessStart+rowLen]
 	return RawTuple(data)
 }

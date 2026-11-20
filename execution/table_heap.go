@@ -64,8 +64,8 @@ func (tableHeap *TableHeap) InsertTuple(txn *transaction.TransactionContext, row
 			}
 		}
 		page, _ := tableHeap.bufferPool.GetPage(common.PageID{Oid: tableHeap.oid, PageNum: tableHeap.PageNum})
-		storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 		page.PageLatch.Lock()
+		storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 
 		_, ok := tableHeap.bufferPool.InitMap[common.PageID{tableHeap.oid, tableHeap.PageNum}]
 		if !ok {
@@ -121,8 +121,8 @@ func (tableHeap *TableHeap) DeleteTuple(txn *transaction.TransactionContext, rid
 		}
 	}
 	page, _ := tableHeap.bufferPool.GetPage(rid.PageID)
-	storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 	page.PageLatch.Lock()
+	storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 	HeapPage := page.AsHeapPage()
 	if HeapPage.IsDeleted(rid) {
 		page.PageLatch.Unlock()
@@ -151,7 +151,7 @@ func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid c
 			}
 			err = txn.AcquireLock(transaction.NewTupleLockTag(rid), transaction.LockModeX)
 			if err != nil {
-				panic("can't not reach here")
+				return ErrTupleDeleted
 			}
 		} else {
 			err := txn.AcquireLock(transaction.NewTableLockTag(rid.Oid), transaction.LockModeIS)
@@ -160,18 +160,15 @@ func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid c
 			}
 			err = txn.AcquireLock(transaction.NewTupleLockTag(rid), transaction.LockModeS)
 			if err != nil {
-				panic("can't not reach here")
+				return ErrTupleDeleted
 			}
 		}
 	}
 	page, _ := tableHeap.bufferPool.GetPage(rid.PageID)
 
+	page.PageLatch.Lock()
+
 	storage.InitializeHeapPageMetadata(tableHeap.desc, page)
-	if forUpdate {
-		page.PageLatch.Lock()
-	} else {
-		page.PageLatch.RLock()
-	}
 	HeapPage := page.AsHeapPage()
 	if HeapPage.IsDeleted(rid) {
 		if forUpdate {
@@ -184,11 +181,7 @@ func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid c
 	}
 	tuple := HeapPage.AccessTuple(rid)
 	copy(buffer, tuple)
-	if forUpdate {
-		page.PageLatch.Unlock()
-	} else {
-		page.PageLatch.RUnlock()
-	}
+	page.PageLatch.Unlock()
 	tableHeap.bufferPool.UnpinPage(page, forUpdate)
 
 	return nil
@@ -203,12 +196,12 @@ func (tableHeap *TableHeap) UpdateTuple(txn *transaction.TransactionContext, rid
 		}
 		err = txn.AcquireLock(transaction.NewTupleLockTag(rid), transaction.LockModeX)
 		if err != nil {
-			panic("can't not reach here")
+			return ErrTupleDeleted
 		}
 	}
 	page, _ := tableHeap.bufferPool.GetPage(rid.PageID)
-	storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 	page.PageLatch.Lock()
+	storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 	HeapPage := page.AsHeapPage()
 	if HeapPage.IsDeleted(rid) {
 		page.PageLatch.Unlock()
@@ -288,13 +281,13 @@ func (it *TableHeapIterator) Next() bool {
 			return false
 		}
 		page, _ := it.tableHeap.bufferPool.GetPage(common.PageID{Oid: it.oid, PageNum: int32(it.countPage)})
+		page.PageLatch.Lock()
 		storage.InitializeHeapPageMetadata(it.tableHeap.desc, page)
-		page.PageLatch.RLock()
 		find := page.AsHeapPage().FindAllocatedSlot(it.countPos)
 		if find == -1 {
 			it.countPos = 0
 			it.countPage += 1
-			page.PageLatch.RUnlock()
+			page.PageLatch.Unlock()
 			it.tableHeap.bufferPool.UnpinPage(page, false)
 		} else {
 			it.countPos = find
@@ -314,7 +307,7 @@ func (it *TableHeapIterator) Next() bool {
 			} else {
 				it.countPos += 1
 			}
-			page.PageLatch.RUnlock()
+			page.PageLatch.Unlock()
 			it.tableHeap.dataLock.Unlock()
 			it.tableHeap.bufferPool.UnpinPage(page, false)
 
@@ -342,7 +335,7 @@ func (it *TableHeapIterator) CurrentRID() common.RecordID {
 
 // CurrentRID returns the first error encountered during iteration, if any.
 func (it *TableHeapIterator) Error() error {
-	return ErrTupleDeleted
+	return nil
 }
 
 // Close releases any resources associated with the TableHeapIterator
