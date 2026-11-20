@@ -19,6 +19,7 @@ type UpdateExecutor struct {
 	indexes   []indexing.Index
 	count     common.Value
 	ctx       *ExecutorContext
+	err       error
 	// Fill me in!
 }
 
@@ -29,6 +30,7 @@ func NewUpdateExecutor(plan *planner.UpdateNode, child Executor, tableHeap *Tabl
 		tableHeap: tableHeap,
 		indexes:   indexes,
 		count:     common.NewIntValue(0),
+		err:       nil,
 	}
 }
 
@@ -59,6 +61,10 @@ func (e *UpdateExecutor) Next() bool {
 	count := 0
 	for {
 		next := e.child.Next()
+		if err := e.child.Error(); err != nil {
+			e.err = err
+			return false
+		}
 		if !next && count == 0 {
 			return false
 		} else if !next {
@@ -66,7 +72,11 @@ func (e *UpdateExecutor) Next() bool {
 		}
 		count += 1
 		OldBuff := make(storage.RawTuple, e.tableHeap.desc.BytesPerTuple())
-		_ = e.tableHeap.ReadTuple(e.ctx.txn, e.child.Current().RID(), OldBuff, true)
+		err := e.tableHeap.ReadTuple(e.ctx.txn, e.child.Current().RID(), OldBuff, true)
+		if err != nil {
+			e.err = err
+			return false
+		}
 		OldTuple := storage.FromRawTuple(OldBuff, e.tableHeap.desc, e.child.Current().RID())
 
 		values := make([]common.Value, 0)
@@ -77,23 +87,23 @@ func (e *UpdateExecutor) Next() bool {
 		NewBuff := make(storage.RawTuple, e.tableHeap.desc.BytesPerTuple())
 		NewTuple := storage.FromValues(values...)
 		NewTuple.WriteToBuffer(NewBuff, e.tableHeap.desc)
-		_ = e.tableHeap.UpdateTuple(e.ctx.txn, e.child.Current().RID(), NewBuff)
-
+		err = e.tableHeap.UpdateTuple(e.ctx.txn, e.child.Current().RID(), NewBuff)
+		if err != nil {
+			e.err = err
+			return false
+		}
 		for _, index := range e.indexes {
-			output := make([]common.RecordID, 0)
 			OldKey := MakeKey(OldTuple, index)
 			NewKey := MakeKey(NewTuple, index)
-			output, err := index.ScanKey(OldKey, output, e.ctx.txn)
-			if len(output) > 0 && err == nil {
-				for _, id := range output {
-					err := index.DeleteEntry(OldKey, id, e.ctx.txn)
-					if err != nil {
-						panic("error in update next")
-					}
-					err = index.InsertEntry(NewKey, id, e.ctx.txn)
-					if err != nil {
-						return false
-					}
+			if OldKey.Compare(NewKey) != 0 {
+				err := index.DeleteEntry(OldKey, e.child.Current().RID(), e.ctx.txn)
+				if err != nil {
+					panic("error in update next")
+				}
+				err = index.InsertEntry(NewKey, e.child.Current().RID(), e.ctx.txn)
+				if err != nil {
+					e.err = err
+					return false
 				}
 			}
 		}
@@ -115,5 +125,5 @@ func (e *UpdateExecutor) Close() error {
 }
 
 func (e *UpdateExecutor) Error() error {
-	return nil
+	return e.err
 }

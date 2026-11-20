@@ -20,6 +20,7 @@ type IndexLookupExecutor struct {
 	output    []common.RecordID
 	tuple     common.RecordID
 	buffer    []byte
+	err       error
 }
 
 func NewIndexLookupExecutor(plan *planner.IndexLookupNode, index indexing.Index, tableHeap *TableHeap) *IndexLookupExecutor {
@@ -27,6 +28,7 @@ func NewIndexLookupExecutor(plan *planner.IndexLookupNode, index indexing.Index,
 		plan:      plan,
 		index:     index,
 		tableHeap: tableHeap,
+		err:       nil,
 	}
 }
 
@@ -66,11 +68,13 @@ func (e *IndexLookupExecutor) Next() bool {
 			if e.plan.ForUpdate {
 				err := e.ctx.txn.AcquireLock(transaction.NewTupleLockTag(e.tuple), transaction.LockModeX)
 				if err != nil {
-					continue
+					e.err = err
+					return false
 				}
 				err = e.tableHeap.ReadTuple(nil, e.tuple, e.buffer, false)
 				if err != nil {
-					continue
+					e.err = err
+					return false
 				}
 				keys := make([]byte, 0)
 				for _, key := range e.index.Metadata().ProjectionList {
@@ -86,10 +90,14 @@ func (e *IndexLookupExecutor) Next() bool {
 			} else {
 				err := e.ctx.txn.AcquireLock(transaction.NewTupleLockTag(e.tuple), transaction.LockModeS)
 				if err != nil {
-					continue
+					e.err = err
+					return false
 				}
 				err = e.tableHeap.ReadTuple(nil, e.tuple, e.buffer, false)
 				if err != nil {
+					if err == ErrTupleDeleted {
+						return false
+					}
 					continue
 				}
 				keys := make([]byte, 0)
@@ -124,5 +132,5 @@ func (e *IndexLookupExecutor) Close() error {
 }
 
 func (e *IndexLookupExecutor) Error() error {
-	return nil
+	return e.err
 }

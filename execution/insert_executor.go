@@ -20,6 +20,7 @@ type InsertExecutor struct {
 	indexes   []indexing.Index
 	count     common.Value
 	ctx       *ExecutorContext
+	err       error
 }
 
 func NewInsertExecutor(plan *planner.InsertNode, child Executor, tableHeap *TableHeap, indexes []indexing.Index) *InsertExecutor {
@@ -29,6 +30,7 @@ func NewInsertExecutor(plan *planner.InsertNode, child Executor, tableHeap *Tabl
 		tableHeap: tableHeap,
 		indexes:   indexes,
 		count:     common.NewIntValue(0),
+		err:       nil,
 	}
 }
 
@@ -50,6 +52,9 @@ func (e *InsertExecutor) Next() bool {
 	count := 0
 	for {
 		next := e.child.Next()
+		if e.child.Error() != nil {
+			return false
+		}
 		if !next && count == 0 {
 			return false
 		} else if !next {
@@ -60,8 +65,13 @@ func (e *InsertExecutor) Next() bool {
 
 		e.child.Current().WriteToBuffer(buffer, e.tableHeap.desc)
 		RecordID, err := e.tableHeap.InsertTuple(e.ctx.txn, buffer)
+		if err != nil {
+			e.err = err
+			return false
+		}
 		tuple := storage.FromRawTuple(buffer, e.tableHeap.desc, RecordID)
 		if err != nil {
+			e.err = err
 			return false
 		}
 		for _, index := range e.indexes {
@@ -74,6 +84,7 @@ func (e *InsertExecutor) Next() bool {
 			key := index.Metadata().AsKey(rawtuple)
 			err = index.InsertEntry(key, RecordID, e.ctx.txn)
 			if err != nil {
+				e.err = err
 				panic("insert to wrong index")
 			}
 		}
@@ -91,5 +102,5 @@ func (e *InsertExecutor) Close() error {
 }
 
 func (e *InsertExecutor) Error() error {
-	return nil
+	return e.err
 }

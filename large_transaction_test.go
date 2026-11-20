@@ -337,6 +337,9 @@ func abortOnDeadlock(t testing.TB, wdb *workloadDB, txn *transaction.Transaction
 	if err == nil {
 		return false
 	}
+	if err != nil {
+		fmt.Printf("DEBUG abortOnDeadlock err type=%T msg=%v\n", err, err)
+	}
 	assert.Equal(t, common.DeadlockError, err.(common.GoDBError).Code)
 	require.NoError(t, wdb.TransactionManager.Abort(txn))
 	runtime.Gosched()
@@ -506,11 +509,17 @@ func TestConcurrent_Bank(t *testing.T) {
 				require.NoError(t, err)
 				_, err = wdb.execSQL(txn, fmt.Sprintf(
 					"UPDATE kv SET v = v - 1 WHERE k = %d", src))
+				if err != nil {
+					fmt.Printf("DEBUG err type=%T msg=%v\n", err, err)
+				}
 				if abortOnDeadlock(t, wdb, txn, err) {
 					continue
 				}
 				_, err = wdb.execSQL(txn, fmt.Sprintf(
 					"UPDATE kv SET v = v + 1 WHERE k = %d", dst))
+				if err != nil {
+					fmt.Printf("DEBUG err type=%T msg=%v\n", err, err)
+				}
 				if abortOnDeadlock(t, wdb, txn, err) {
 					continue
 				}
