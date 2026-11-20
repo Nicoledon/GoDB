@@ -91,33 +91,24 @@ func DeleteEvictablePage(bp *BufferPool) (common.PageID, *PageFrame, bool) {
 	if maxtime < bp.NumPages*2 {
 		maxtime = bp.NumPages * 2
 	}
-	lsnLess := false
 	for {
 		for i := 0; i < maxtime; i++ {
 			hand := bp.pageMap.clock_hand
 			if !bp.pageMap.clock_page[hand].valid {
 				bp.pageMap.clock_hand = (hand + 1) % bp.NumPages
 				return common.PageID{}, bp.pageMap.clock_page[hand], true
-			} else if bp.pageMap.clock_page[hand].evictable && !bp.pageMap.clock_page[hand].ref && bp.pageMap.clock_page[hand].LSN() <= bp.logManager.FlushedUntil() {
+			} else if bp.pageMap.clock_page[hand].evictable && !bp.pageMap.clock_page[hand].ref {
 				bp.pageMap.clock_hand = (hand + 1) % bp.NumPages
 				return bp.pageMap.clock_page[hand].pageID, bp.pageMap.clock_page[hand], true
 			} else if bp.pageMap.clock_page[hand].evictable && bp.pageMap.clock_page[hand].ref {
 				bp.pageMap.clock_page[hand].ref = false
 			}
-			if bp.pageMap.clock_page[hand].evictable && i > 500 && bp.pageMap.clock_page[hand].LSN() <= bp.logManager.FlushedUntil() {
+			if bp.pageMap.clock_page[hand].evictable && i > 500 {
 				bp.pageMap.clock_hand = (hand + 1) % bp.NumPages
 				return bp.pageMap.clock_page[hand].pageID, bp.pageMap.clock_page[hand], true
 			}
 			hand = (hand + 1) % bp.NumPages
 			bp.pageMap.clock_hand = hand
-		}
-		for _, v := range bp.pageMap.pageManager {
-			if v.LSN() <= bp.logManager.FlushedUntil() {
-				lsnLess = true
-			}
-		}
-		if !lsnLess {
-			continue
 		}
 		bp.cond.Wait()
 		return common.PageID{}, nil, false
@@ -172,6 +163,9 @@ func (bp *BufferPool) GetPage(pageID common.PageID) (*PageFrame, error) {
 		}
 		bp.mu.Unlock()
 		if dirty {
+			if bp.logManager != nil {
+				bp.logManager.WaitUntilFlushed(frame.LSN())
+			}
 			WritePageOut(bp, index, frame)
 			frame.dirty = false
 			bp.mu.Lock()
@@ -213,6 +207,9 @@ func (bp *BufferPool) FlushAllPages() error {
 			v.evictable = false
 			v.PageLatch.Lock()
 			file, _ := bp.FileManager.GetDBFile(v.pageID.Oid)
+			if bp.logManager != nil {
+				bp.logManager.WaitUntilFlushed(v.LSN())
+			}
 			err := file.WritePage(int(v.pageID.PageNum), v.Bytes[:])
 			v.PageLatch.Unlock()
 			v.pins -= 1

@@ -220,7 +220,6 @@ func (tableHeap *TableHeap) UpdateTuple(txn *transaction.TransactionContext, rid
 	copy(before, tuple)
 	copy(tuple, updatedTuple)
 	page.PageLatch.Unlock()
-	tableHeap.bufferPool.UnpinPage(page, true)
 	if txn != nil {
 		err := txn.AcquireLock(transaction.NewTableLockTag(rid.Oid), transaction.LockModeIX)
 		if err != nil {
@@ -234,6 +233,7 @@ func (tableHeap *TableHeap) UpdateTuple(txn *transaction.TransactionContext, rid
 		lsn, err := tableHeap.logManager.Append(record)
 		page.MonotonicallyUpdateLSN(lsn)
 	}
+	tableHeap.bufferPool.UnpinPage(page, true)
 	return nil
 }
 
