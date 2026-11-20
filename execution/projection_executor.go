@@ -13,6 +13,7 @@ type ProjectionExecutor struct {
 	plan  *planner.ProjectionNode
 	child Executor
 	ctx   *ExecutorContext
+	err   error
 }
 
 // NewProjectionExecutor creates a new ProjectionExecutor.
@@ -20,6 +21,7 @@ func NewProjectionExecutor(plan *planner.ProjectionNode, child Executor) *Projec
 	return &ProjectionExecutor{
 		plan:  plan,
 		child: child,
+		err:   nil,
 	}
 }
 
@@ -37,6 +39,10 @@ func (e *ProjectionExecutor) Init(ctx *ExecutorContext) error {
 }
 
 func (e *ProjectionExecutor) Next() bool {
+	if e.child.Error() != nil {
+		e.err = e.child.Error()
+		return false
+	}
 	return e.child.Next()
 }
 
@@ -50,7 +56,7 @@ func (e *ProjectionExecutor) Current() storage.Tuple {
 }
 
 func (e *ProjectionExecutor) Error() error {
-	return nil
+	return e.child.Error()
 }
 
 func (e *ProjectionExecutor) Close() error {

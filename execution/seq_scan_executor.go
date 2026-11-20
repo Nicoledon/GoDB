@@ -3,7 +3,6 @@ package execution
 import (
 	"mit.edu/dsg/godb/planner"
 	"mit.edu/dsg/godb/storage"
-	"mit.edu/dsg/godb/transaction"
 )
 
 // SeqScanExecutor implements a sequential scan over a table.
@@ -14,6 +13,7 @@ type SeqScanExecutor struct {
 	iter      *TableHeapIterator
 	ctx       *ExecutorContext
 	tuple     storage.RawTuple
+	err       error
 }
 
 // NewSeqScanExecutor creates a new SeqScanExecutor.
@@ -21,6 +21,7 @@ func NewSeqScanExecutor(plan *planner.SeqScanNode, tableHeap *TableHeap) *SeqSca
 	return &SeqScanExecutor{
 		plan:      plan,
 		tableHeap: tableHeap,
+		err:       nil,
 	}
 }
 
@@ -31,7 +32,11 @@ func (e *SeqScanExecutor) PlanNode() planner.PlanNode {
 
 func (e *SeqScanExecutor) Init(context *ExecutorContext) error {
 	e.ctx = context
-	item, _ := e.tableHeap.Iterator(e.ctx.txn, transaction.LockModeS, make([]byte, e.tableHeap.desc.BytesPerTuple()))
+	item, err := e.tableHeap.Iterator(e.ctx.txn, e.plan.Mode, make([]byte, e.tableHeap.desc.BytesPerTuple()))
+	if err != nil {
+		e.err = err
+		return err
+	}
 	e.iter = &item
 	return nil
 }
@@ -49,6 +54,12 @@ func (e *SeqScanExecutor) Current() storage.Tuple {
 }
 
 func (e *SeqScanExecutor) Error() error {
+	if e.err != nil {
+		return e.err
+	}
+	if e.iter != nil {
+		return e.iter.Error()
+	}
 	return nil
 }
 

@@ -51,8 +51,7 @@ func NewTransactionManager(logManager storage.LogManager, bufferPool *storage.Bu
 // Begin starts a new transaction and returns the initialized context.
 func (tm *TransactionManager) Begin() (*TransactionContext, error) {
 
-	tm.nextTxnID.Add(1)
-	var tid common.TransactionID = common.TransactionID(tm.nextTxnID.Load())
+	tid := common.TransactionID(tm.nextTxnID.Add(1))
 	ctx := NewTestTransactionContext(tm.lockManager, tid)
 	tm.logManager.Append(storage.NewBeginTransactionRecord(make([]byte, storage.BeginTransactionRecordSize()), tid))
 	return ctx, nil

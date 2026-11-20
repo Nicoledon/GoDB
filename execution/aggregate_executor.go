@@ -21,6 +21,7 @@ type AggregateExecutor struct {
 	count          int64
 	notusedgroupby []common.Value
 	over           bool
+	err            error
 }
 
 func NewAggregateExecutor(plan *planner.AggregateNode, child Executor) *AggregateExecutor {
@@ -40,6 +41,7 @@ func NewAggregateExecutor(plan *planner.AggregateNode, child Executor) *Aggregat
 		count:          0,
 		notusedgroupby: make([]common.Value, 0),
 		over:           false,
+		err:            nil,
 	}
 }
 
@@ -49,7 +51,10 @@ func (e *AggregateExecutor) PlanNode() planner.PlanNode {
 
 func (e *AggregateExecutor) Init(ctx *ExecutorContext) error {
 	e.ctx = ctx
-	e.child.Init(ctx)
+	if err := e.child.Init(ctx); err != nil {
+		e.err = err
+		return err
+	}
 	return nil
 }
 func EvalExpr(tuple storage.Tuple, clause planner.AggregateClause, prev common.Value) common.Value {
@@ -136,12 +141,20 @@ func (e *AggregateExecutor) handAlltypes(key storage.Tuple, tuple storage.Tuple)
 	}
 }
 func (e *AggregateExecutor) Next() bool {
+	if err := e.child.Error(); err != nil {
+		e.err = e.child.Error()
+		return false
+	}
 	if e.over {
 		return false
 	}
 	if e.cnt == 0 {
 		for e.child.Next() {
 			e.tuples = append(e.tuples, e.child.Current().DeepCopy(storage.NewRawTupleDesc(e.child.PlanNode().OutputSchema())))
+		}
+		if err := e.child.Error(); err != nil {
+			e.err = err
+			return false
 		}
 		for _, tuple := range e.tuples {
 			values := make([]common.Value, 0)
@@ -198,7 +211,10 @@ func (e *AggregateExecutor) Current() storage.Tuple {
 }
 
 func (e *AggregateExecutor) Error() error {
-	return nil
+	if e.err != nil {
+		return e.err
+	}
+	return e.child.Error()
 }
 
 func (e *AggregateExecutor) Close() error {

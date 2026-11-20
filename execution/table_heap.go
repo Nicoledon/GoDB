@@ -2,7 +2,6 @@ package execution
 
 import (
 	"errors"
-	"fmt"
 	"sync"
 
 	"mit.edu/dsg/godb/catalog"
@@ -133,7 +132,6 @@ func (tableHeap *TableHeap) DeleteTuple(txn *transaction.TransactionContext, rid
 	if HeapPage.IsDeleted(rid) {
 		page.PageLatch.Unlock()
 		tableHeap.bufferPool.UnpinPage(page, false)
-		fmt.Printf("DEBUG deleted rid=%+v isAlloc=%v isDel=%v numSlots=%d\n", rid, HeapPage.IsAllocated(rid), HeapPage.IsDeleted(rid), HeapPage.NumSlots())
 		return ErrTupleDeleted
 	}
 	HeapPage.MarkDeleted(rid, true)
@@ -189,7 +187,6 @@ func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid c
 		}
 		tableHeap.bufferPool.UnpinPage(page, false)
 
-		fmt.Printf("DEBUG deleted rid=%+v isAlloc=%v isDel=%v numSlots=%d\n", rid, HeapPage.IsAllocated(rid), HeapPage.IsDeleted(rid), HeapPage.NumSlots())
 		return ErrTupleDeleted
 	}
 	tuple := HeapPage.AccessTuple(rid)
@@ -221,7 +218,6 @@ func (tableHeap *TableHeap) UpdateTuple(txn *transaction.TransactionContext, rid
 		page.PageLatch.Unlock()
 		tableHeap.bufferPool.UnpinPage(page, false)
 		tableHeap.err = ErrTupleDeleted
-		fmt.Printf("DEBUG deleted rid=%+v isAlloc=%v isDel=%v numSlots=%d\n", rid, HeapPage.IsAllocated(rid), HeapPage.IsDeleted(rid), HeapPage.NumSlots())
 		return ErrTupleDeleted
 	}
 	tuple := HeapPage.AccessTuple(rid)
