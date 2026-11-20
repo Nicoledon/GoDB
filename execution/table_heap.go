@@ -180,11 +180,7 @@ func (tableHeap *TableHeap) ReadTuple(txn *transaction.TransactionContext, rid c
 	storage.InitializeHeapPageMetadata(tableHeap.desc, page)
 	HeapPage := page.AsHeapPage()
 	if HeapPage.IsDeleted(rid) {
-		if forUpdate {
-			page.PageLatch.Unlock()
-		} else {
-			page.PageLatch.RUnlock()
-		}
+		page.PageLatch.Unlock()
 		tableHeap.bufferPool.UnpinPage(page, false)
 
 		return ErrTupleDeleted
